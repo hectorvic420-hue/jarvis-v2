@@ -1,14 +1,14 @@
 import "./memory/db"; // inicializa DB antes que todo
+// @ts-ignore
 import express from "express";
 import { createTelegramBot } from "./bot/telegram.js";
 import whatsappRouter from "./bot/whatsapp.route.js";
-import { env } from "./config/env.js";
 
-const app = express();
+const app = (express as any)();
 
 // Middlewares
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use((express as any).json());
+app.use((express as any).urlencoded({ extended: true }));
 
 // Rutas
 app.use("/webhook/whatsapp", whatsappRouter);
@@ -37,7 +37,7 @@ async function start() {
   }
 
   // Iniciar servidor Express (Webhook WA)
-  app.listen(PORT, () => {
+  app.listen(Number(PORT), () => {
     console.log(`✅ Servidor Express online en puerto ${PORT}`);
   });
 }

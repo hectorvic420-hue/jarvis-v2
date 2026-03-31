@@ -6,20 +6,7 @@ import {
   deletePendingOrder,
 } from "../shared/pendingStore.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-interface ToolParameters {
-  type: "object";
-  properties: Record<string, unknown>;
-  required?: string[];
-}
-
-export interface Tool {
-  name: string;
-  description: string;
-  parameters: ToolParameters;
-  execute: (params: Record<string, unknown>, chatId: string) => Promise<string>;
-}
+import { Tool } from "../shared/types.js";
 
 // ─── Shared response type ─────────────────────────────────────────────────────
 
@@ -88,6 +75,8 @@ async function checkCircuitBreaker(): Promise<{ halt: boolean; reason?: string }
     if (btcBalance) {
       const ticker = await publicGet("/api/v3/ticker/price", { symbol: "BTCUSDT" });
       const btcPrice = parseFloat(ticker.price);
+      if (isNaN(btcPrice)) throw new Error("Could not fetch BTC price");
+
       const btcValue = parseFloat(btcBalance.free) * btcPrice;
       const total = usdt + btcValue;
 
@@ -116,8 +105,12 @@ async function checkCircuitBreaker(): Promise<{ halt: boolean; reason?: string }
     }
 
     return { halt: false };
-  } catch {
-    return { halt: false };
+  } catch (err: any) {
+    console.error("[BINANCE] Circuit Breaker check failed:", err.message);
+    return { 
+      halt: true, 
+      reason: `⚠️ ERROR DE SEGURIDAD: No se pudo verificar el estado de la cuenta (${err.message}). Bloqueando operaciones por precaución.` 
+    };
   }
 }
 

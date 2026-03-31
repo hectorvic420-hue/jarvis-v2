@@ -1,16 +1,26 @@
-import { Tool } from "./binance.js";
-import { binanceTool } from "./binance.js";
+import { Tool }                  from "../shared/types.js";
 import { facebookPublisherTool } from "./facebook_publisher.js";
-import { metaAdsTool } from "./meta_ads.js";
-import { n8nManagerTool } from "./n8n_manager.js";
+import { metaAdsTool }           from "./meta_ads.js";
+import { n8nManagerTool }        from "./n8n_manager.js";
+import { googleWorkspaceTool }   from "./google_workspace.js";
+import { imageGeneratorTool }    from "./image_generator.js";
+import { systemControlTool }     from "./system_control.js";
+import { videoComposerTool }     from "./video_composer.js";
+import { voiceTool }             from "./voice.js";
+import { binanceTool }           from "./binance.js";
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
 export const tools: Record<string, Tool> = {
-  [binanceTool.name]: binanceTool,
   [facebookPublisherTool.name]: facebookPublisherTool,
-  [metaAdsTool.name]: metaAdsTool,
-  [n8nManagerTool.name]: n8nManagerTool,
+  [metaAdsTool.name]:           metaAdsTool,
+  [n8nManagerTool.name]:        n8nManagerTool,
+  [googleWorkspaceTool.name]:   googleWorkspaceTool,
+  [imageGeneratorTool.name]:    imageGeneratorTool,
+  [systemControlTool.name]:     systemControlTool,
+  [videoComposerTool.name]:     videoComposerTool,
+  [voiceTool.name]:             voiceTool,
+  [binanceTool.name]:           binanceTool,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -21,6 +31,11 @@ export function getTool(name: string): Tool | undefined {
 
 export function listTools(): string[] {
   return Object.keys(tools);
+}
+
+/** Alias — retorna array de Tool para consumo directo en el agente/bot */
+export function getAllTools(): Tool[] {
+  return Object.values(tools);
 }
 
 /**

@@ -1,140 +1,243 @@
-import * as fs from "fs";
-import * as path from "path";
-import fetch from "node-fetch";
+import { Tool } from "../shared/types.js";
+import fs   from "fs";
+import path from "path";
 
-const OUTPUT_DIR = "/data/media/images";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ApiResponse = Record<string, any>;
 
-export type ImageFormat = "1:1" | "16:9" | "9:16" | "4:3" | "3:4";
-export type ImageStyle = "photorealistic" | "anime" | "illustration" | "cinematic" | "dark";
+const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "./output/images";
 
-export interface GenerateImageOptions {
-  prompt: string;
-  negative_prompt?: string;
-  format?: ImageFormat;
-  style?: ImageStyle;
-  num_images?: number;        // 1-4
-  guidance_scale?: number;    // 1-20, default 7
-  steps?: number;             // 20-50
-  seed?: number;
-  filename?: string;
+// ─── Ensure output dir ────────────────────────────────────────────────────────
+
+function ensureOutputDir(): void {
+  if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 }
 
-export interface GenerateImageResult {
-  success: boolean;
-  paths: string[];
-  prompt_used: string;
-  error?: string;
-}
+// ─── Providers ────────────────────────────────────────────────────────────────
 
-// ─── Dimension map ────────────────────────────────────────────────────────────
-const DIMENSIONS: Record<ImageFormat, { width: number; height: number }> = {
-  "1:1":  { width: 1024, height: 1024 },
-  "16:9": { width: 1920, height: 1080 },
-  "9:16": { width: 1080, height: 1920 },
-  "4:3":  { width: 1024, height: 768  },
-  "3:4":  { width: 768,  height: 1024 },
-};
+async function generateTogetherAI(
+  prompt:         string,
+  model:          string,
+  width:          number,
+  height:         number,
+  steps:          number,
+  negativePrompt: string
+): Promise<string> {
+  const key = process.env.TOGETHER_API_KEY;
+  if (!key) throw new Error("TOGETHER_API_KEY no configurado");
 
-// ─── Style prefix map ─────────────────────────────────────────────────────────
-const STYLE_PREFIXES: Record<ImageStyle, string> = {
-  photorealistic: "hyperrealistic photo, 8k resolution, professional photography, ",
-  anime:          "anime style, vibrant colors, detailed linework, studio quality, ",
-  illustration:   "digital illustration, concept art, detailed, professional, ",
-  cinematic:      "cinematic shot, film grain, dramatic lighting, movie still, ",
-  dark:           "dark aesthetic, moody atmosphere, dramatic shadows, high contrast, ",
-};
-
-// ─── Flux API via fal.ai ──────────────────────────────────────────────────────
-async function callFluxAPI(options: GenerateImageOptions): Promise<string[]> {
-  const apiKey = process.env.FAL_API_KEY ?? process.env.FLUX_API_KEY;
-  if (!apiKey) throw new Error("FAL_API_KEY or FLUX_API_KEY not set");
-
-  const format = options.format ?? "1:1";
-  const dims = DIMENSIONS[format];
-  const stylePrefix = options.style ? STYLE_PREFIXES[options.style] : "";
-  const finalPrompt = stylePrefix + options.prompt;
-
-  // fal.ai Flux endpoint
-  const response = await fetch("https://fal.run/fal-ai/flux/dev", {
+  const res = await fetch("https://api.together.xyz/v1/images/generations", {
     method: "POST",
     headers: {
+      Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
-      "Authorization": `Key ${apiKey}`,
     },
     body: JSON.stringify({
-      prompt: finalPrompt,
-      negative_prompt: options.negative_prompt ?? "blurry, low quality, distorted",
-      image_size: { width: dims.width, height: dims.height },
-      num_inference_steps: options.steps ?? 28,
-      guidance_scale: options.guidance_scale ?? 7.5,
-      num_images: options.num_images ?? 1,
-      seed: options.seed,
-      enable_safety_checker: true,
+      model,
+      prompt,
+      negative_prompt: negativePrompt,
+      width,
+      height,
+      steps,
+      n: 1,
     }),
   });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Flux API error ${response.status}: ${err}`);
-  }
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data["error"]?.["message"] as string || `Together AI ${res.status}`);
 
-  const data = (await response.json()) as { images: { url: string }[] };
-  return data.images.map((img) => img.url);
+  const imageUrl = data["data"]?.[0]?.["url"] as string;
+  if (!imageUrl) throw new Error("Together AI no retornó URL de imagen");
+
+  return imageUrl;
 }
 
-// ─── Download and save image ──────────────────────────────────────────────────
-async function downloadImage(url: string, filePath: string): Promise<void> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to download image: ${res.status}`);
-  const buffer = await res.buffer();
-  fs.writeFileSync(filePath, buffer);
+async function generateFalAI(
+  prompt:  string,
+  model:   string,
+  width:   number,
+  height:  number,
+  steps:   number
+): Promise<string> {
+  const key = process.env.FAL_API_KEY;
+  if (!key) throw new Error("FAL_API_KEY no configurado");
+
+  const res = await fetch(`https://fal.run/${model}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+      image_size:  { width, height },
+      num_steps:   steps,
+      num_images:  1,
+    }),
+  });
+
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data["message"] as string || `Fal.ai ${res.status}`);
+
+  const imageUrl = data["images"]?.[0]?.["url"] as string;
+  if (!imageUrl) throw new Error("Fal.ai no retornó URL de imagen");
+
+  return imageUrl;
 }
 
-// ─── Main: generateImage ──────────────────────────────────────────────────────
-export async function generateImage(
-  options: GenerateImageOptions
-): Promise<GenerateImageResult> {
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+async function generateReplicate(
+  prompt:         string,
+  model:          string,
+  width:          number,
+  height:         number,
+  steps:          number,
+  negativePrompt: string
+): Promise<string> {
+  const key = process.env.REPLICATE_API_KEY;
+  if (!key) throw new Error("REPLICATE_API_KEY no configurado");
 
-  const stylePrefix = options.style ? STYLE_PREFIXES[options.style] : "";
-  const promptUsed = stylePrefix + options.prompt;
+  // Crear predicción
+  const res = await fetch("https://api.replicate.com/v1/predictions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      version: model,
+      input: {
+        prompt,
+        negative_prompt: negativePrompt,
+        width,
+        height,
+        num_inference_steps: steps,
+      },
+    }),
+  });
 
-  try {
-    const imageUrls = await callFluxAPI(options);
-    const savedPaths: string[] = [];
+  const prediction = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(prediction["detail"] as string || `Replicate ${res.status}`);
 
-    for (let i = 0; i < imageUrls.length; i++) {
-      const baseName =
-        options.filename
-          ? `${options.filename}${imageUrls.length > 1 ? `_${i + 1}` : ""}.png`
-          : `img_${Date.now()}_${i + 1}.png`;
+  // Poll hasta completar (max 60s)
+  const pollUrl = prediction["urls"]?.["get"] as string;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const poll = await fetch(pollUrl, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    const status = await poll.json() as ApiResponse;
 
-      const filePath = path.join(OUTPUT_DIR, baseName);
-      await downloadImage(imageUrls[i], filePath);
-      savedPaths.push(filePath);
+    if (status["status"] === "succeeded") {
+      const output = status["output"] as string[] | string;
+      return Array.isArray(output) ? output[0] : output;
     }
-
-    return { success: true, paths: savedPaths, prompt_used: promptUsed };
-  } catch (err: any) {
-    return { success: false, paths: [], prompt_used: promptUsed, error: err.message };
+    if (status["status"] === "failed") {
+      throw new Error(`Replicate falló: ${status["error"] as string}`);
+    }
   }
+  throw new Error("Replicate timeout (60s)");
 }
 
-// ─── Batch generation ─────────────────────────────────────────────────────────
-export async function generateImageBatch(
-  prompts: string[],
-  baseOptions: Omit<GenerateImageOptions, "prompt">
-): Promise<GenerateImageResult[]> {
-  const results: GenerateImageResult[] = [];
-  for (const prompt of prompts) {
-    const result = await generateImage({ ...baseOptions, prompt });
-    results.push(result);
-  }
-  return results;
+// ─── Save image locally ───────────────────────────────────────────────────────
+
+async function saveImage(url: string, filename: string): Promise<string> {
+  ensureOutputDir();
+  const res  = await fetch(url);
+  const buf  = Buffer.from(await res.arrayBuffer());
+  const ext  = url.includes(".png") ? "png" : "jpg";
+  const file = path.join(OUTPUT_DIR, `${filename}.${ext}`);
+  fs.writeFileSync(file, buf);
+  return file;
 }
 
-// ─── Tool registry ────────────────────────────────────────────────────────────
-export const imageGeneratorTools = {
-  generate_image: generateImage,
-  generate_image_batch: generateImageBatch,
+// ─── Main generate ────────────────────────────────────────────────────────────
+
+async function generate(
+  prompt:          string,
+  provider:        string,
+  model:           string,
+  width:           number,
+  height:          number,
+  steps:           number,
+  negativePrompt:  string,
+  saveLocally:     boolean
+): Promise<string> {
+  let imageUrl: string;
+
+  switch (provider) {
+    case "fal":
+      imageUrl = await generateFalAI(prompt, model, width, height, steps);
+      break;
+    case "replicate":
+      imageUrl = await generateReplicate(prompt, model, width, height, steps, negativePrompt);
+      break;
+    case "together":
+    default:
+      imageUrl = await generateTogetherAI(prompt, model, width, height, steps, negativePrompt);
+  }
+
+  const lines = [
+    `🖼️ *Imagen generada*`,
+    `Proveedor: ${provider}`,
+    `Modelo: ${model}`,
+    `Dimensiones: ${width}×${height}`,
+    `URL: ${imageUrl}`,
+  ];
+
+  if (saveLocally) {
+    const ts   = Date.now();
+    const file = await saveImage(imageUrl, `image_${ts}`);
+    lines.push(`Guardada en: ${file}`);
+  }
+
+  return lines.join("\n");
+}
+
+// ─── Tool export ──────────────────────────────────────────────────────────────
+
+export const imageGeneratorTool: Tool = {
+  name: "image_generator",
+  description:
+    "Genera imágenes con IA usando Together AI, Fal.ai o Replicate. " +
+    "Soporta modelos como FLUX, SDXL, Stable Diffusion. Retorna URL pública y opcionalmente guarda localmente.",
+  parameters: {
+    type: "object",
+    properties: {
+      prompt:          { type: "string",  description: "Prompt en inglés para mejor calidad" },
+      provider:        { type: "string",  enum: ["together", "fal", "replicate"], description: "Proveedor de generación" },
+      model:           { type: "string",  description: "Nombre/versión del modelo" },
+      width:           { type: "number",  description: "Ancho en píxeles (default: 1024)" },
+      height:          { type: "number",  description: "Alto en píxeles (default: 1024)" },
+      steps:           { type: "number",  description: "Pasos de difusión (default: 30)" },
+      negative_prompt: { type: "string",  description: "Elementos a excluir de la imagen" },
+      save_locally:    { type: "boolean", description: "Guardar imagen en disco (default: false)" },
+    },
+    required: ["prompt"],
+  },
+
+  async execute(params, _chatId) {
+    const {
+      prompt,
+      provider        = "together",
+      model           = "black-forest-labs/FLUX.1-schnell-Free",
+      width           = 1024,
+      height          = 1024,
+      steps           = 30,
+      negative_prompt = "blurry, low quality, distorted, watermark",
+      save_locally    = false,
+    } = params as Record<string, any>;
+
+    if (!prompt) return "❌ Falta parámetro: prompt";
+
+    return generate(
+      prompt as string,
+      provider as string,
+      model as string,
+      width as number,
+      height as number,
+      steps as number,
+      negative_prompt as string,
+      save_locally as boolean
+    );
+  },
 };

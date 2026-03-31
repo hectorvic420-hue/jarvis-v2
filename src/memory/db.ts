@@ -1,74 +1,63 @@
-import Database, { type Database as DB } from "better-sqlite3";
-import path from "path";
-import fs from "fs";
-import { env } from "../config/env";
+import Database from "better-sqlite3";
+import * as path from "path";
+import * as fs from "fs";
 
-// Garantiza que el directorio exista (disco persistente en GCP)
-const dbDir = path.dirname(env.DB_PATH);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+const DB_DIR  = process.env.DB_DIR ?? "data/db";
+const DB_PATH = path.join(DB_DIR, "jarvis.db");
+
+if (!fs.existsSync(DB_DIR)) {
+  fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
-export const db: DB = new Database(env.DB_PATH);
+const db = new Database(DB_PATH);
 
-// Pragmas de rendimiento y seguridad
+// ─── Pragmas ──────────────────────────────────────────────────────────────────
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
-db.pragma("synchronous = NORMAL");
 
+// ─── Migrations ───────────────────────────────────────────────────────────────
 db.exec(`
-  -- Historial de conversación por usuario
   CREATE TABLE IF NOT EXISTS messages (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    role      TEXT    NOT NULL CHECK(role IN ('user','assistant','system')),
-    content   TEXT    NOT NULL,
-    user_id   INTEGER NOT NULL,
-    ts        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT    NOT NULL,
+    role        TEXT    NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+    content     TEXT    NOT NULL,
+    source      TEXT    NOT NULL DEFAULT 'telegram',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   );
 
-  -- Registro de auditoría de acciones
-  CREATE TABLE IF NOT EXISTS audit_log (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    action    TEXT    NOT NULL,
-    payload   TEXT,
-    user_id   INTEGER,
-    status    TEXT    NOT NULL DEFAULT 'ok',
-    ts        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-  );
+  CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_created  ON messages(created_at);
 
-  -- Estado de capital por asset
-  CREATE TABLE IF NOT EXISTS capital_state (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset     TEXT    NOT NULL,
-    amount    REAL    NOT NULL,
-    source    TEXT,
-    updated   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-  );
-
-  -- Historial de trades
-  CREATE TABLE IF NOT EXISTS trade_log (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol    TEXT    NOT NULL,
-    side      TEXT    NOT NULL CHECK(side IN ('buy','sell')),
-    qty       REAL    NOT NULL,
-    price     REAL    NOT NULL,
-    pnl       REAL    DEFAULT 0,
-    ts        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-  );
-
-  -- Memoria permanente (nunca se borra automáticamente)
   CREATE TABLE IF NOT EXISTS facts (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    key       TEXT    NOT NULL UNIQUE,
-    value     TEXT    NOT NULL,
-    updated   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT    NOT NULL,
+    key         TEXT    NOT NULL,
+    value       TEXT    NOT NULL,
+    confidence  REAL    NOT NULL DEFAULT 1.0,
+    source      TEXT    NOT NULL DEFAULT 'inferred',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, key)
   );
 
-  -- Índices
-  CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
-  CREATE INDEX IF NOT EXISTS idx_messages_ts   ON messages(ts DESC);
-  CREATE INDEX IF NOT EXISTS idx_audit_ts      ON audit_log(ts DESC);
-  CREATE INDEX IF NOT EXISTS idx_facts_key     ON facts(key);
+  CREATE INDEX IF NOT EXISTS idx_facts_user_id ON facts(user_id);
+
+  CREATE TABLE IF NOT EXISTS tasks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT    NOT NULL,
+    title       TEXT    NOT NULL,
+    description TEXT,
+    status      TEXT    NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending', 'in_progress', 'done', 'cancelled')),
+    priority    INTEGER NOT NULL DEFAULT 2,
+    due_at      TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);
+  CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
 `);
 
-console.log(`✅ DB lista: ${env.DB_PATH}`);
+export default db;

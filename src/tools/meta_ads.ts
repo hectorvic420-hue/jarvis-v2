@@ -1,4 +1,4 @@
-import { Tool } from "./binance.js";
+import { Tool } from "../shared/types.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ApiResponse = Record<string, any>;

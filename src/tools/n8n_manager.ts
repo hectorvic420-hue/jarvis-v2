@@ -1,4 +1,4 @@
-import { Tool } from "./binance.js";
+import { Tool } from "../shared/types.js";
 
 // ─── n8n REST helper ──────────────────────────────────────────────────────────
 

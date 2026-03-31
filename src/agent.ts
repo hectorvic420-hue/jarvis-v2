@@ -1,28 +1,13 @@
-import { callLLM, LLMMessage, LLMTool, LLMResponse } from "./llm";
-
-// ─── Memory import (seguro — si el módulo no existe, usa array vacío) ─────────
-let memoryService: { getAllFacts: (userId: string) => string[] } | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  memoryService = require("./memory/service").memoryService;
-} catch {
-  console.warn("[AGENT] memory/service no disponible — memoria deshabilitada.");
-}
+import { callLLM, LLMMessage, LLMTool, LLMResponse } from "./llm.js";
+import { Tool } from "./shared/types.js";
+import { memoryService } from "./memory/service.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface Tool {
-  name:        string;
-  description: string;
-  parameters:  object;
-  // chatId es el userId de Telegram — necesario para pendingStore (Binance, etc.)
-  execute: (args: Record<string, unknown>, chatId: string) => Promise<string>;
-}
 
 export interface AgentOptions {
   tools:        Tool[];
   systemPrompt: string;
-  userId:       string;
+  userId:       string | number;
 }
 
 export interface AgentResult {
@@ -134,39 +119,42 @@ export async function runAgent(
 ): Promise<AgentResult> {
   const { tools, systemPrompt, userId } = options;
 
-  // ── Memory injection ─────────────────────────────────────────────────────
-  let facts: string[] = [];
-  try {
-    facts = memoryService?.getAllFacts(userId) ?? [];
-  } catch {
-    // Silenciar — memoria no crítica
-  }
+  // ── Memory & Context injection ───────────────────────────────────────────
+  const ctx = memoryService.getContext(userId, 15);
+  
+  const factBlock = ctx.facts.length > 0
+    ? `\n\n## HECHOS DEL USUARIO:\n${ctx.facts.map(f => `- ${f.key}: ${f.value}`).join("\n")}`
+    : "";
 
-  const memoryBlock =
-    facts.length > 0
-      ? `\n\n## MEMORIA DEL USUARIO\n${facts.map((f) => `- ${f}`).join("\n")}`
-      : "";
+  const timeBlock = `\n\n## CONTEXTO TEMPORAL:\n- Fecha y hora: ${new Date().toLocaleString("es-CO")}\n- Zona: America/Bogota`;
 
-  const fullSystem = systemPrompt + memoryBlock;
+  const fullSystem = systemPrompt + factBlock + timeBlock;
 
-  // ── Tool setup ───────────────────────────────────────────────────────────
-  const toolMap   = new Map(tools.map((t) => [t.name, t]));
   const toolNames = tools.map((t) => t.name);
   const llmTools  = buildLLMTools(tools);
+
+  // ── Message assembly ───────────────────────────────────────────────────
+  const messages: LLMMessage[] = [
+    { role: "system", content: fullSystem },
+  ];
+
+  // Inyectar historial previo
+  ctx.recent_messages.forEach(m => {
+    messages.push({ role: m.role as "user" | "assistant" | "tool", content: m.content });
+  });
 
   const shouldUseTool = tools.length > 0 && needsToolUse(userMessage);
   const userContent   = shouldUseTool
     ? userMessage + buildActionReminder(toolNames)
     : userMessage;
 
-  const messages: LLMMessage[] = [
-    { role: "system", content: fullSystem },
-    { role: "user",   content: userContent },
-  ];
+  // Agregar mensaje actual del usuario
+  messages.push({ role: "user", content: userContent });
 
   // ── State ────────────────────────────────────────────────────────────────
   const usedTools:   string[] = [];
   const toolHistory: string[] = [];
+  const toolMap       = new Map(tools.map((t) => [t.name, t]));
   let iterations   = 0;
   let lastProvider = "groq";
   let warning: string | undefined;
@@ -264,7 +252,6 @@ export async function runAgent(
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(toolCall.function.arguments || "{}") as Record<string, unknown>;
-        console.log(`[AGENT] Tool args para ${toolName}:`, args);
       } catch {
         messages.push({
           role:         "tool",
@@ -274,21 +261,17 @@ export async function runAgent(
         continue;
       }
 
-      // Execute — userId actúa como chatId para pendingStore y tools con contexto
+      // Execute
       try {
-        const raw       = await executeToolWithTimeout(tool, args, userId);
+        const raw       = await executeToolWithTimeout(tool, args, String(userId));
         const truncated = truncateToolResponse(raw);
-        console.log(`[AGENT] Salida de tool ${toolName}:`, truncated.substring(0, 100) + "...");
-        
-        // La propiedad 'name' en el role 'tool' no es estándar en Groq/OpenAI, puede causar error 400.
-        // Solo mandamos role, tool_call_id y content.
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
+          name:         toolName,
           content:      truncated,
         });
       } catch (err) {
-        console.error(`[AGENT] Error ejecutando ${toolName}:`, err);
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,

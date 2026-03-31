@@ -139,29 +139,60 @@ async function callOpenRouter(
   };
 }
 
-async function callGemini(messages: LLMMessage[]): Promise<LLMResponse> {
+async function callGemini(
+  messages: LLMMessage[],
+  tools?: LLMTool[]
+): Promise<LLMResponse> {
   const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+  
+  // Transformar tools al formato Gemini (arreglo de { functionDeclarations: [...] })
+  const geminiTools = tools && tools.length > 0 
+    ? [{
+        functionDeclarations: tools.map(t => ({
+          name: t.function.name,
+          description: t.function.description,
+          parameters: t.function.parameters as any,
+        }))
+      }]
+    : undefined;
+
+  const model = genAI.getGenerativeModel({ 
+    model: GEMINI_MODEL,
+    tools: geminiTools as any,
+  });
 
   const systemMsg    = messages.find((m) => m.role === "system");
-  const chatMessages = messages.filter(
-    (m) => m.role !== "system" && m.role !== "tool"
-  );
+  const chatMessages = messages.filter((m) => m.role !== "system");
 
-  // Gemini requiere turnos alternados user/model — fusionamos mismo-rol consecutivo
-  const history: { role: "user" | "model"; parts: { text: string }[] }[] = [];
-  for (const m of chatMessages.slice(0, -1)) {
-    const role = m.role === "assistant" ? "model" : "user";
-    const last = history[history.length - 1];
-    if (last && last.role === role) {
-      last.parts.push({ text: m.content ?? "" });
+  // Gemini requiere turnos alternados user/model/tool
+  const history: any[] = [];
+  for (let i = 0; i < chatMessages.length - 1; i++) {
+    const m = chatMessages[i];
+    const role = m.role === "assistant" ? "model" : (m.role === "tool" ? "function" : "user");
+    
+    if (role === "function") {
+      history.push({
+        role: "function",
+        parts: [{ functionResponse: { name: m.name, response: { content: m.content } } }]
+      });
     } else {
-      history.push({ role, parts: [{ text: m.content ?? "" }] });
+      const parts: any[] = [];
+      if (m.content) parts.push({ text: m.content });
+      if (m.tool_calls) {
+        m.tool_calls.forEach(tc => {
+          parts.push({ 
+            functionCall: { 
+              name: tc.function.name, 
+              args: JSON.parse(tc.function.arguments) 
+            } 
+          });
+        });
+      }
+      history.push({ role, parts });
     }
   }
 
   const lastMsg = chatMessages[chatMessages.length - 1];
-
   const chat = model.startChat({
     history,
     ...(systemMsg?.content ? { systemInstruction: systemMsg.content } : {}),
@@ -173,9 +204,21 @@ async function callGemini(messages: LLMMessage[]): Promise<LLMResponse> {
     "Gemini"
   );
 
+  const responseText = result.response.text();
+  const functionCalls = result.response.candidates?.[0]?.content?.parts?.filter(p => p.functionCall);
+  
+  const toolCalls: ToolCall[] | undefined = functionCalls?.map((fc, idx) => ({
+    id: `gemini-${Date.now()}-${idx}`,
+    type: "function",
+    function: {
+      name: fc.functionCall!.name,
+      arguments: JSON.stringify(fc.functionCall!.args),
+    }
+  }));
+
   return {
-    content:      result.response.text(),
-    tool_calls:   undefined,
+    content:      responseText || null,
+    tool_calls:   toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
     provider:     "gemini",
     usedFallback: true,
   };
@@ -185,7 +228,6 @@ async function callGemini(messages: LLMMessage[]): Promise<LLMResponse> {
 
 /**
  * Cadena de fallback: Groq → OpenRouter → Gemini.
- * Gemini no soporta tools — si se alcanza, las tools se omiten.
  */
 export async function callLLM(
   messages: LLMMessage[],
@@ -206,13 +248,10 @@ export async function callLLM(
   }
 
   try {
-    console.log("[LLM] Intentando Gemini (sin tools)...");
-    if (tools && tools.length > 0) {
-      console.warn("[LLM] Gemini no soporta tools — se omiten.");
-    }
-    return await callGemini(messages);
+    console.log("[LLM] Intentando Gemini...");
+    return await callGemini(messages, tools);
   } catch (err) {
     console.error("[LLM] Gemini falló:", (err as Error).message);
-    throw new Error("Todos los proveedores LLM fallaron.");
+    throw new Error(`Todos los proveedores LLM fallaron. Último error: ${(err as Error).message}`);
   }
 }

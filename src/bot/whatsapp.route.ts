@@ -81,21 +81,83 @@ async function processMessage(msg: WaMessage): Promise<void> {
 
   if (!userInput.trim()) return;
 
+  // ─── Command handling (parity with Telegrambot) ───────────────────────────
+  const cmd = userInput.trim().toLowerCase();
+  
+  if (cmd === "/ayuda" || cmd === "ayuda") {
+    await sendText(msg.from, 
+      "📋 *Jarvis WhatsApp — Comandos*\n\n" +
+      "• /ayuda — Esta ayuda\n" +
+      "• /estado — Ver estado del sistema\n" +
+      "• /confirmar — Ejecutar orden pendiente\n" +
+      "• /cancelar — Cancelar orden pendiente\n\n" +
+      "O simplemente escríbeme lo que necesites."
+    );
+    return;
+  }
+
+  if (cmd === "/confirmar" || cmd === "confirmar") {
+    await sendTyping(msg.from, 1000);
+    const tools = Object.values(toolRegistry);
+    try {
+      const result = await runAgent("ACCIÓN CONFIRMADA POR EL USUARIO: /confirmar", { 
+        tools, 
+        systemPrompt: SYSTEM_PROMPT, 
+        userId: parseInt(msg.from_number.replace(/\D/g, "")) || 0
+      });
+      await sendText(msg.from, result.response);
+    } catch (err: any) {
+      await sendText(msg.from, `❌ Error: ${err.message}`);
+    }
+    return;
+  }
+
+  if (cmd === "/cancelar" || cmd === "cancelar") {
+    // Para simplificar, usamos runAgent para limpiar estados si se desea, 
+    // o simplemente avisamos. El agente detectará la intención si hay pendiente.
+    const result = await runAgent("EL USUARIO CANCELÓ LA ACCIÓN: /cancelar", { 
+      tools: Object.values(toolRegistry), 
+      systemPrompt: SYSTEM_PROMPT, 
+      userId: parseInt(msg.from_number.replace(/\D/g, "")) || 0
+    });
+    await sendText(msg.from, result.response);
+    return;
+  }
+
+  if (cmd === "/estado" || cmd === "estado") {
+    const toolNames = Object.keys(toolRegistry);
+    await sendText(msg.from, 
+      `⚙️ *Jarvis v2 Status*\n\n` +
+      `🔧 Herramientas: ${toolNames.length}\n` +
+      `📱 Usuario: ${msg.from_number}\n` +
+      `✅ Sistema Online`
+    );
+    return;
+  }
+
+  // ─── Agent Processing ─────────────────────────────────────────────────────
   try {
     const tools = Object.values(toolRegistry);
+    const userId = parseInt(msg.from_number.replace(/\D/g, "")) || 0;
+
+    // Guardar mensaje en DB
+    memoryService.addMessage(userId, "user", userInput, "whatsapp");
+
     const agentResult = await runAgent(userInput, { 
       tools, 
       systemPrompt: SYSTEM_PROMPT, 
-      userId: msg.from_number 
+      userId
     });
     
+    // Guardar respuesta en DB
+    memoryService.addMessage(userId, "assistant", agentResult.response, "whatsapp");
+
     // Add warning if exists (e.g. Gemini fallback warning)
     const replyText = agentResult.warning 
       ? `${agentResult.warning}\n\n${agentResult.response}`
       : agentResult.response;
 
     // ── Send response ─────────────────────────────────────────────────────────
-    // Split long messages (WA limit ~4096 chars)
     const chunks = splitMessage(replyText, 4000);
     for (const chunk of chunks) {
       await sendText(msg.from, chunk, msg.message_id);

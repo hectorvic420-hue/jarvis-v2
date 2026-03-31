@@ -2,17 +2,7 @@ import { Bot, Context, session, SessionFlavor } from "grammy";
 import { runAgent }       from "../agent";
 import { tools as toolRegistry, listTools } from "../tools/index.js";
 
-// ─── Memory import (seguro) ───────────────────────────────────────────────────
-let memoryService: {
-  getAllFacts:  (userId: string) => string[];
-  deleteFact:  (userId: string, fact: string) => boolean;
-} | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  memoryService = require("../memory/service").memoryService;
-} catch {
-  console.warn("[BOT] memory/service no disponible.");
-}
+import { memoryService } from "../memory/service";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -140,7 +130,7 @@ export function createTelegramBot(): Bot<BotCtx> {
 
   // ── /memoria ─────────────────────────────────────────────────────────────
   bot.command("memoria", async (ctx) => {
-    const userId = String(ctx.from!.id);
+    const userId = ctx.from!.id;
     const facts  = memoryService?.getAllFacts(userId) ?? [];
 
     if (facts.length === 0) {
@@ -156,7 +146,7 @@ export function createTelegramBot(): Bot<BotCtx> {
 
   // ── /olvida [texto] ───────────────────────────────────────────────────────
   bot.command("olvida", async (ctx) => {
-    const userId = String(ctx.from!.id);
+    const userId = ctx.from!.id;
     const raw    = ctx.message?.text ?? "";
     const arg    = raw.replace(/^\/olvida\s*/i, "").trim();
 
@@ -188,7 +178,7 @@ export function createTelegramBot(): Bot<BotCtx> {
 
   // ── /estado ───────────────────────────────────────────────────────────────
   bot.command("estado", async (ctx) => {
-    const userId  = String(ctx.from!.id);
+    const userId = ctx.from!.id;
     const toolNames = listTools();
     const facts   = memoryService?.getAllFacts(userId) ?? [];
     const pending = ctx.session.pendingAction;
@@ -219,7 +209,7 @@ export function createTelegramBot(): Bot<BotCtx> {
 
     ctx.session.pendingAction = undefined;
     const processingMsg = await ctx.reply("⏳ Ejecutando acción confirmada...");
-    const userId        = String(ctx.from!.id);
+    const userId = ctx.from!.id;
     const tools         = Object.values(toolRegistry);
 
     try {
@@ -257,8 +247,11 @@ export function createTelegramBot(): Bot<BotCtx> {
   // ── Mensajes de texto ─────────────────────────────────────────────────────
   bot.on("message:text", async (ctx) => {
     const text   = ctx.message.text;
-    const userId = String(ctx.from.id);
+    const userId = ctx.from.id;
     const tools  = Object.values(toolRegistry);
+
+    // Guardar mensaje del usuario
+    memoryService.addMessage(userId, "user", text, "telegram");
 
     const processingMsg = await ctx.reply("⏳ Procesando...");
 
@@ -270,6 +263,9 @@ export function createTelegramBot(): Bot<BotCtx> {
       });
 
       await tryDelete(ctx, processingMsg.message_id);
+
+      // Guardar respuesta del asistente
+      memoryService.addMessage(userId, "assistant", result.response, "telegram");
 
       const response = result.warning
         ? `${result.warning}\n\n${result.response}`

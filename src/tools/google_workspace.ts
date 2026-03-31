@@ -1,374 +1,262 @@
-import { google } from "googleapis";
-import * as fs from "fs";
-import * as path from "path";
+import { Tool } from "../shared/types.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ApiResponse = Record<string, any>;
+
+const GMAIL_BASE    = "https://gmail.googleapis.com/gmail/v1";
+const CALENDAR_BASE = "https://www.googleapis.com/calendar/v3";
+const DRIVE_BASE    = "https://www.googleapis.com/drive/v3";
+const DOCS_BASE     = "https://docs.googleapis.com/v1";
+const SHEETS_BASE   = "https://sheets.googleapis.com/v4";
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
-function getAuthClient() {
-  const credsJson = process.env.GOOGLE_CREDENTIALS_JSON;
-  if (!credsJson) throw new Error("GOOGLE_CREDENTIALS_JSON not set");
 
-  const creds = JSON.parse(credsJson);
+function token(): string {
+  const t = process.env.GOOGLE_ACCESS_TOKEN;
+  if (!t) throw new Error("GOOGLE_ACCESS_TOKEN no configurado");
+  return t;
+}
 
-  // Service account
-  if (creds.type === "service_account") {
-    return new google.auth.GoogleAuth({
-      credentials: creds,
-      scopes: [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/calendar",
-      ],
+async function gGet(url: string, params: Record<string, string> = {}): Promise<ApiResponse> {
+  const qs = Object.keys(params).length
+    ? "?" + new URLSearchParams(params).toString()
+    : "";
+  const res = await fetch(`${url}${qs}`, {
+    headers: { Authorization: `Bearer ${token()}` },
+  });
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data["error"]?.["message"] as string || `Google API ${res.status}`);
+  return data;
+}
+
+async function gPost(url: string, body: unknown): Promise<ApiResponse> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data["error"]?.["message"] as string || `Google API ${res.status}`);
+  return data;
+}
+
+async function gPatch(url: string, body: unknown): Promise<ApiResponse> {
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data["error"]?.["message"] as string || `Google API ${res.status}`);
+  return data;
+}
+
+// ─── Gmail ────────────────────────────────────────────────────────────────────
+
+async function listEmails(query = "", maxResults = 10): Promise<string> {
+  const data = await gGet(`${GMAIL_BASE}/users/me/messages`, {
+    q: query,
+    maxResults: maxResults.toString(),
+  });
+
+  const messages = (data["messages"] as ApiResponse[]) ?? [];
+  if (!messages.length) return "📧 Sin correos encontrados.";
+
+  const lines = [`📧 *Correos (${messages.length})*`];
+  for (const m of messages.slice(0, 10)) {
+    const detail = await gGet(`${GMAIL_BASE}/users/me/messages/${m["id"] as string}`, {
+      format: "metadata",
+      metadataHeaders: "Subject,From,Date",
     });
+    const headers = (detail["payload"]?.["headers"] as ApiResponse[]) ?? [];
+    const subject = headers.find((h: ApiResponse) => h["name"] === "Subject")?.["value"] ?? "(sin asunto)";
+    const from    = headers.find((h: ApiResponse) => h["name"] === "From")?.["value"] ?? "?";
+    lines.push(`• ${subject}\n  De: ${from}`);
   }
+  return lines.join("\n");
+}
 
-  // OAuth2 credentials
-  const oauth2Client = new google.auth.OAuth2(
-    creds.client_id,
-    creds.client_secret,
-    creds.redirect_uri
-  );
-  if (creds.refresh_token) {
-    oauth2Client.setCredentials({ refresh_token: creds.refresh_token });
+async function sendEmail(to: string, subject: string, body: string): Promise<string> {
+  const raw = Buffer.from(
+    `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`
+  )
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  const data = await gPost(`${GMAIL_BASE}/users/me/messages/send`, { raw });
+  return `✅ Email enviado\nID: ${data["id"] as string}`;
+}
+
+// ─── Calendar ─────────────────────────────────────────────────────────────────
+
+async function listEvents(maxResults = 10): Promise<string> {
+  const data = await gGet(`${CALENDAR_BASE}/calendars/primary/events`, {
+    timeMin: new Date().toISOString(),
+    maxResults: maxResults.toString(),
+    singleEvents: "true",
+    orderBy: "startTime",
+  });
+
+  const items = (data["items"] as ApiResponse[]) ?? [];
+  if (!items.length) return "📅 Sin eventos próximos.";
+
+  const lines = [`📅 *Próximos eventos (${items.length})*`];
+  for (const e of items) {
+    const start = (e["start"]?.["dateTime"] ?? e["start"]?.["date"]) as string;
+    const date  = new Date(start).toLocaleString("es-CO", { timeZone: "America/Bogota" });
+    lines.push(`• ${e["summary"] as string ?? "(sin título)"}\n  ${date}`);
   }
-  return oauth2Client;
+  return lines.join("\n");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SHEETS
-// ─────────────────────────────────────────────────────────────────────────────
-
-const DEFAULT_SHEET_ID = process.env.GOOGLE_SHEETS_ID ?? "";
-
-export interface SheetReadResult {
-  success: boolean;
-  values: string[][];
-  rows: number;
-  error?: string;
+async function createEvent(
+  summary: string,
+  startDateTime: string,
+  endDateTime: string,
+  description?: string
+): Promise<string> {
+  const data = await gPost(`${CALENDAR_BASE}/calendars/primary/events`, {
+    summary,
+    description,
+    start: { dateTime: startDateTime, timeZone: "America/Bogota" },
+    end:   { dateTime: endDateTime,   timeZone: "America/Bogota" },
+  });
+  return `✅ Evento creado\nID: ${data["id"] as string}\n${summary}`;
 }
 
-export async function sheetsRead(
-  range: string,
-  spreadsheetId = DEFAULT_SHEET_ID
-): Promise<SheetReadResult> {
-  try {
-    const auth  = getAuthClient();
-    const sheets = google.sheets({ version: "v4", auth: auth as any });
+// ─── Drive ────────────────────────────────────────────────────────────────────
 
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    const values = (res.data.values ?? []) as string[][];
-    return { success: true, values, rows: values.length };
-  } catch (err: any) {
-    return { success: false, values: [], rows: 0, error: err.message };
-  }
-}
-
-export interface SheetWriteResult {
-  success: boolean;
-  updated_cells?: number;
-  error?: string;
-}
-
-export async function sheetsWrite(
-  range: string,
-  values: (string | number | boolean)[][],
-  spreadsheetId = DEFAULT_SHEET_ID
-): Promise<SheetWriteResult> {
-  try {
-    const auth  = getAuthClient();
-    const sheets = google.sheets({ version: "v4", auth: auth as any });
-
-    const res = await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values },
-    });
-
-    return { success: true, updated_cells: res.data.updatedCells ?? 0 };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-export async function sheetsAppend(
-  range: string,
-  values: (string | number | boolean)[][],
-  spreadsheetId = DEFAULT_SHEET_ID
-): Promise<SheetWriteResult> {
-  try {
-    const auth  = getAuthClient();
-    const sheets = google.sheets({ version: "v4", auth: auth as any });
-
-    const res = await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range,
-      valueInputOption: "USER_ENTERED",
-      insertDataOption: "INSERT_ROWS",
-      requestBody: { values },
-    });
-
-    return {
-      success: true,
-      updated_cells: res.data.updates?.updatedCells ?? 0,
-    };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-export async function sheetsClear(
-  range: string,
-  spreadsheetId = DEFAULT_SHEET_ID
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const auth  = getAuthClient();
-    const sheets = google.sheets({ version: "v4", auth: auth as any });
-
-    await sheets.spreadsheets.values.clear({ spreadsheetId, range });
-    return { success: true };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DRIVE
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface DriveFile {
-  id: string;
-  name: string;
-  mimeType: string;
-  size?: string;
-  modifiedTime?: string;
-  webViewLink?: string;
-}
-
-export async function driveList(
-  folderId?: string,
-  query?: string
-): Promise<{ success: boolean; files: DriveFile[]; error?: string }> {
-  try {
-    const auth  = getAuthClient();
-    const drive = google.drive({ version: "v3", auth: auth as any });
-
-    let q = "trashed = false";
-    if (folderId) q += ` and '${folderId}' in parents`;
-    if (query)    q += ` and ${query}`;
-
-    const res = await drive.files.list({
-      q,
-      fields: "files(id,name,mimeType,size,modifiedTime,webViewLink)",
-      pageSize: 50,
-    });
-
-    return { success: true, files: (res.data.files ?? []) as DriveFile[] };
-  } catch (err: any) {
-    return { success: false, files: [], error: err.message };
-  }
-}
-
-export interface DriveUploadResult {
-  success: boolean;
-  file_id?: string;
-  web_view_link?: string;
-  error?: string;
-}
-
-export async function driveUpload(
-  localPath: string,
-  remoteName?: string,
-  folderId?: string,
-  mimeType?: string
-): Promise<DriveUploadResult> {
-  try {
-    const auth  = getAuthClient();
-    const drive = google.drive({ version: "v3", auth: auth as any });
-
-    const fileName = remoteName ?? path.basename(localPath);
-    const detectedMime = mimeType ?? detectMimeType(localPath);
-
-    const res = await drive.files.create({
-      requestBody: {
-        name: fileName,
-        parents: folderId ? [folderId] : undefined,
-      },
-      media: {
-        mimeType: detectedMime,
-        body: fs.createReadStream(localPath),
-      },
-      fields: "id,webViewLink",
-    });
-
-    return {
-      success: true,
-      file_id: res.data.id ?? undefined,
-      web_view_link: res.data.webViewLink ?? undefined,
-    };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-export async function driveDownload(
-  fileId: string,
-  localPath: string
-): Promise<{ success: boolean; path: string; error?: string }> {
-  try {
-    const auth  = getAuthClient();
-    const drive = google.drive({ version: "v3", auth: auth as any });
-
-    const dest = fs.createWriteStream(localPath);
-
-    const res = await drive.files.get(
-      { fileId, alt: "media" },
-      { responseType: "stream" }
-    );
-
-    await new Promise<void>((resolve, reject) => {
-      (res.data as any)
-        .on("end", resolve)
-        .on("error", reject)
-        .pipe(dest);
-    });
-
-    return { success: true, path: localPath };
-  } catch (err: any) {
-    return { success: false, path: "", error: err.message };
-  }
-}
-
-function detectMimeType(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  const map: Record<string, string> = {
-    ".pdf":  "application/pdf",
-    ".png":  "image/png",
-    ".jpg":  "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".mp4":  "video/mp4",
-    ".mp3":  "audio/mpeg",
-    ".json": "application/json",
-    ".csv":  "text/csv",
-    ".txt":  "text/plain",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+async function listFiles(query = "", maxResults = 10): Promise<string> {
+  const params: Record<string, string> = {
+    pageSize: maxResults.toString(),
+    fields:   "files(id,name,mimeType,modifiedTime,size)",
   };
-  return map[ext] ?? "application/octet-stream";
-}
+  if (query) params["q"] = query;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CALENDAR
-// ─────────────────────────────────────────────────────────────────────────────
+  const data  = await gGet(`${DRIVE_BASE}/files`, params);
+  const files = (data["files"] as ApiResponse[]) ?? [];
+  if (!files.length) return "📁 Sin archivos encontrados.";
 
-export interface CalendarEvent {
-  id?: string;
-  summary: string;
-  description?: string;
-  start: string;   // ISO 8601
-  end: string;     // ISO 8601
-  location?: string;
-  attendees?: string[];
-  html_link?: string;
-}
-
-export async function calendarList(
-  calendarId = "primary",
-  maxResults = 20,
-  timeMin?: string
-): Promise<{ success: boolean; events: CalendarEvent[]; error?: string }> {
-  try {
-    const auth     = getAuthClient();
-    const calendar = google.calendar({ version: "v3", auth: auth as any });
-
-    const res = await calendar.events.list({
-      calendarId,
-      maxResults,
-      singleEvents: true,
-      orderBy: "startTime",
-      timeMin: timeMin ?? new Date().toISOString(),
-    });
-
-    const events: CalendarEvent[] = (res.data.items ?? []).map((e: any) => ({
-      id: e.id ?? "",
-      summary: e.summary ?? "(sin título)",
-      description: e.description ?? undefined,
-      start: e.start?.dateTime ?? e.start?.date ?? "",
-      end: e.end?.dateTime ?? e.end?.date ?? "",
-      location: e.location ?? undefined,
-      attendees: e.attendees?.map((a: any) => a.email ?? "").filter(Boolean),
-      html_link: e.htmlLink ?? undefined,
-    }));
-
-    return { success: true, events };
-  } catch (err: any) {
-    return { success: false, events: [], error: err.message };
+  const lines = [`📁 *Archivos Drive (${files.length})*`];
+  for (const f of files) {
+    const size = f["size"] ? `${Math.round(parseInt(f["size"] as string) / 1024)}KB` : "";
+    lines.push(`• ${f["name"] as string} ${size}\n  ID: ${f["id"] as string}`);
   }
+  return lines.join("\n");
 }
 
-export interface CreateEventResult {
-  success: boolean;
-  event_id?: string;
-  html_link?: string;
-  error?: string;
+async function readDoc(docId: string): Promise<string> {
+  const data = await gGet(`${DOCS_BASE}/documents/${docId}`);
+  const content = data["body"]?.["content"] as ApiResponse[] ?? [];
+
+  const text = content
+    .flatMap((block: ApiResponse) =>
+      ((block["paragraph"]?.["elements"] as ApiResponse[]) ?? []).map(
+        (el: ApiResponse) => el["textRun"]?.["content"] as string ?? ""
+      )
+    )
+    .join("")
+    .trim()
+    .slice(0, 2000);
+
+  return `📄 *${data["title"] as string}*\n\n${text}${text.length >= 2000 ? "\n...[truncado]" : ""}`;
 }
 
-export async function calendarCreate(
-  event: CalendarEvent,
-  calendarId = "primary"
-): Promise<CreateEventResult> {
-  try {
-    const auth     = getAuthClient();
-    const calendar = google.calendar({ version: "v3", auth: auth as any });
+async function readSheet(spreadsheetId: string, range = "A1:Z100"): Promise<string> {
+  const data = await gGet(
+    `${SHEETS_BASE}/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`
+  );
+  const rows = (data["values"] as string[][]) ?? [];
+  if (!rows.length) return "📊 Hoja vacía o sin datos en el rango.";
 
-    const res = await calendar.events.insert({
-      calendarId,
-      requestBody: {
-        summary: event.summary,
-        description: event.description,
-        location: event.location,
-        start: { dateTime: event.start, timeZone: "America/Bogota" },
-        end:   { dateTime: event.end,   timeZone: "America/Bogota" },
-        attendees: event.attendees?.map((email) => ({ email })),
+  const preview = rows
+    .slice(0, 20)
+    .map((row) => row.join(" | "))
+    .join("\n");
+
+  return `📊 *Hoja (${rows.length} filas)*\n\`\`\`\n${preview}\n\`\`\``;
+}
+
+async function appendToSheet(
+  spreadsheetId: string,
+  range: string,
+  values: string[][]
+): Promise<string> {
+  const data = await gPost(
+    `${SHEETS_BASE}/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`,
+    { values }
+  );
+  const updates = data["updates"] as ApiResponse;
+  return `✅ Filas añadidas: ${updates?.["updatedRows"] as number ?? "?"}\nRango: ${updates?.["updatedRange"] as string ?? range}`;
+}
+
+// ─── Tool export ──────────────────────────────────────────────────────────────
+
+export const googleWorkspaceTool: Tool = {
+  name: "google_workspace",
+  description:
+    "Accede a Gmail (leer/enviar emails), Google Calendar (listar/crear eventos), " +
+    "Google Drive (listar archivos), Google Docs (leer documentos) y Google Sheets (leer/escribir).",
+  parameters: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: [
+          "list_emails", "send_email",
+          "list_events", "create_event",
+          "list_files",  "read_doc",
+          "read_sheet",  "append_sheet",
+        ],
       },
-    });
+      query:          { type: "string",  description: "Búsqueda (emails/archivos)" },
+      to:             { type: "string",  description: "Destinatario email" },
+      subject:        { type: "string",  description: "Asunto del email" },
+      body:           { type: "string",  description: "Cuerpo del email" },
+      summary:        { type: "string",  description: "Título del evento" },
+      start_datetime: { type: "string",  description: "ISO 8601 (2025-04-01T10:00:00)" },
+      end_datetime:   { type: "string",  description: "ISO 8601 (2025-04-01T11:00:00)" },
+      description:    { type: "string",  description: "Descripción del evento" },
+      doc_id:         { type: "string",  description: "ID de Google Doc" },
+      spreadsheet_id: { type: "string",  description: "ID de Google Sheet" },
+      range:          { type: "string",  description: "Rango A1:Z100" },
+      values:         { type: "array",   description: "Filas a insertar [[col1, col2]]" },
+      max_results:    { type: "number",  description: "Límite de resultados" },
+    },
+    required: ["action"],
+  },
 
-    return {
-      success: true,
-      event_id: res.data.id ?? undefined,
-      html_link: res.data.htmlLink ?? undefined,
-    };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
+  async execute(params, _chatId) {
+    const {
+      action, query, to, subject, body, summary,
+      start_datetime, end_datetime, description,
+      doc_id, spreadsheet_id, range, values, max_results,
+    } = params as Record<string, any>;
 
-export async function calendarDelete(
-  eventId: string,
-  calendarId = "primary"
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const auth     = getAuthClient();
-    const calendar = google.calendar({ version: "v3", auth: auth as any });
-
-    await calendar.events.delete({ calendarId, eventId });
-    return { success: true };
-  } catch (err: any) {
-    return { success: false, error: err.message };
-  }
-}
-
-// ─── Tool registry ────────────────────────────────────────────────────────────
-export const googleWorkspaceTools = {
-  // Sheets
-  sheets_read:   sheetsRead,
-  sheets_write:  sheetsWrite,
-  sheets_append: sheetsAppend,
-  sheets_clear:  sheetsClear,
-  // Drive
-  drive_list:     driveList,
-  drive_upload:   driveUpload,
-  drive_download: driveDownload,
-  // Calendar
-  calendar_list:   calendarList,
-  calendar_create: calendarCreate,
-  calendar_delete: calendarDelete,
+    switch (action) {
+      case "list_emails":  return listEmails(query, max_results);
+      case "send_email":
+        if (!to || !subject || !body) return "❌ Faltan: to, subject, body";
+        return sendEmail(to, subject, body);
+      case "list_events":  return listEvents(max_results);
+      case "create_event":
+        if (!summary || !start_datetime || !end_datetime)
+          return "❌ Faltan: summary, start_datetime, end_datetime";
+        return createEvent(summary, start_datetime, end_datetime, description);
+      case "list_files":   return listFiles(query, max_results);
+      case "read_doc":
+        if (!doc_id) return "❌ Falta: doc_id";
+        return readDoc(doc_id);
+      case "read_sheet":
+        if (!spreadsheet_id) return "❌ Falta: spreadsheet_id";
+        return readSheet(spreadsheet_id, range);
+      case "append_sheet":
+        if (!spreadsheet_id || !range || !values) return "❌ Faltan: spreadsheet_id, range, values";
+        return appendToSheet(spreadsheet_id, range, values);
+      default:
+        return `❌ Acción desconocida: ${action as string}`;
+    }
+  },
 };
