@@ -171,9 +171,7 @@ export async function runAgent(
   });
 
   const shouldUseTool = tools.length > 0 && !isConversational(userMessage);
-  const userContent   = shouldUseTool
-    ? userMessage + buildActionReminder(toolNames)
-    : userMessage;
+  const userContent   = userMessage;
 
   // Agregar mensaje actual del usuario
   messages.push({ role: "user", content: userContent });

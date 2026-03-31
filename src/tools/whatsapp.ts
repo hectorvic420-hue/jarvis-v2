@@ -166,27 +166,32 @@ export function parseWebhookPayload(body: any): WaMessage | null {
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 export const whatsappTool: Tool = {
     name: "whatsapp_manager",
-    description: "Maneja la conexión de WhatsApp. Permite crear instancias, obtener códigos de vinculación (pairing) y códigos QR.",
+    description: "Gestiona la sesión de WhatsApp (vincular o crear).",
     parameters: {
         type: "object",
         properties: {
-            action: { type: "string", enum: ["create", "qr", "pairing", "send"] },
-            name:   { type: "string", description: "Nombre de la instancia" },
-            number: { type: "string", description: "Número con código de país para vincular" },
-            text:   { type: "string", description: "Texto a enviar" },
-            to:     { type: "string", description: "Número de destino" }
+            action: { 
+                type: "string", 
+                enum: ["create", "pairing", "qr"],
+                description: "Usa 'create' para iniciar, 'pairing' para código de 8 dígitos o 'qr' para imagen."
+            },
+            number: { 
+                type: "string", 
+                description: "Número telefónico CON código de país (ej: 5219988... o 57324...)" 
+            }
         },
         required: ["action"]
     },
     async execute(params, _chatId) {
-        const { action, name, number, text, to } = params as Record<string, any>;
-        const inst = name ?? INSTANCE_NAME;
+        const { action, number } = params as Record<string, any>;
+        const inst = INSTANCE_NAME;
         try {
             switch (action) {
                 case "create":  return await createInstance(inst);
                 case "qr":      return await getQrCode(inst);
-                case "pairing": return await getPairingCode(inst, number as string);
-                case "send":    const r = await sendText(to as string, text as string); return r.success ? "✅ Enviado" : `❌ ${r.error as string}`;
+                case "pairing": 
+                    if (!number) return "❌ Error: Proporciona el número de teléfono para el código de vinculación.";
+                    return await getPairingCode(inst, number.replace(/\D/g, ""));
                 default:        return "❌ Acción desconocida.";
             }
         } catch (err: any) { return `❌ Error en WA: ${err.message as string}`; }
