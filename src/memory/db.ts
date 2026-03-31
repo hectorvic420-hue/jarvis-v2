@@ -1,15 +1,15 @@
-import Database from "better-sqlite3";
-import * as path from "path";
-import * as fs from "fs";
+import Database, { Database as DatabaseType } from "better-sqlite3";
+import * as path from "node:path";
+import * as fs from "node:fs";
 
-const DB_DIR  = process.env.DB_DIR ?? "data/db";
+const DB_DIR  = process.env.DB_DIR || "data/db";
 const DB_PATH = path.join(DB_DIR, "jarvis.db");
 
 if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
-const db = new Database(DB_PATH);
+const db: DatabaseType = new Database(DB_PATH);
 
 // ─── Pragmas ──────────────────────────────────────────────────────────────────
 db.pragma("journal_mode = WAL");

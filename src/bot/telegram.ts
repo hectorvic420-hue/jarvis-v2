@@ -1,8 +1,7 @@
 import { Bot, Context, session, SessionFlavor } from "grammy";
 import { runAgent }       from "../agent";
 import { tools as toolRegistry, listTools } from "../tools/index.js";
-
-import { memoryService } from "../memory/service";
+import { memoryService } from "../memory/service.js";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -168,9 +167,11 @@ export function createTelegramBot(): Bot<BotCtx> {
       await ctx.reply(`✅ Olvidado: _${arg}_`, { parse_mode: "Markdown" });
     } else {
       const facts = memoryService.getAllFacts(userId);
-      const hint  =
+      const hint =
         facts.length > 0
-          ? `\n\nHechos actuales:\n${facts.map((f, i) => `${i + 1}. ${f}`).join("\n")}`
+          ? `\n\nHechos actuales:\n${facts
+              .map((f, i) => `${i + 1}. *${f.key}*: ${f.value}`)
+              .join("\n")}`
           : "";
       await ctx.reply(`❌ No encontré ese hecho exacto en mi memoria.${hint}`);
     }

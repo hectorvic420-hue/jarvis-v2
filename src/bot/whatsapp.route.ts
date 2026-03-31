@@ -19,6 +19,7 @@ import { textToSpeech }     from "../tools/voice";
 
 import { runAgent } from "../agent.js";
 import { tools as toolRegistry } from "../tools/index.js";
+import { memoryService } from "../memory/service.js";
 
 const SYSTEM_PROMPT =
   `Eres Jarvis, un agente de IA personal altamente capaz, preciso y eficiente. ` +

@@ -159,8 +159,9 @@ function getAllFacts(userId: string | number): Fact[] {
   return stmts.getAllFacts.all(String(userId)) as Fact[];
 }
 
-function deleteFact(userId: string | number, key: string): void {
-  stmts.deleteFact.run(String(userId), key);
+function deleteFact(userId: string | number, key: string): boolean {
+  const result = stmts.deleteFact.run(String(userId), key);
+  return result.changes > 0;
 }
 
 function clearFacts(userId: string | number): void {
