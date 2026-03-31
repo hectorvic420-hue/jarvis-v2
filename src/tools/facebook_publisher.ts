@@ -157,11 +157,27 @@ async function getInsights(postId?: string): Promise<string> {
   const data = await graphGet(endpoint, { metric: fields, period: "day" });
 
   if (!data.data?.length) return "📊 Sin datos de insights disponibles.";
-
+  
   const lines = [postId ? `📊 *Insights del post ${postId}*` : `📊 *Insights de la página*`];
   for (const metric of data.data) {
     const value = metric.values?.[metric.values.length - 1]?.value ?? 0;
     lines.push(`• ${metric.name}: ${value}`);
+  }
+  return lines.join("\n");
+}
+
+async function listPages(): Promise<string> {
+  const data = await graphGet("/me/accounts", {
+    fields: "id,name,category,access_token,tasks",
+  });
+
+  if (!data.data?.length) return "📋 No encontré ninguna página vinculada a este token.";
+
+  const lines = ["📋 *Tus páginas de Facebook vinculadas:*"];
+  for (const page of data.data) {
+    const tasks = (page.tasks as string[]) || [];
+    const canPost = tasks.includes("MANAGE") || tasks.includes("PUBLISH_CONTENT") || tasks.includes("CREATE_CONTENT");
+    lines.push(`• *${page.name}* (ID: ${page.id})\n  Permisos: ${tasks.join(", ")}\n  Capacidad de publicar: ${canPost ? "✅ SÍ" : "❌ NO"}`);
   }
   return lines.join("\n");
 }
@@ -184,6 +200,7 @@ export const facebookPublisherTool: Tool = {
           "post_reel",
           "schedule_post",
           "list_posts",
+          "list_pages",
           "get_insights",
         ],
         description: "Acción a ejecutar",
@@ -260,6 +277,9 @@ export const facebookPublisherTool: Tool = {
 
       case "list_posts":
         return listPosts(limit || 10);
+
+      case "list_pages":
+        return listPages();
 
       case "get_insights":
         return getInsights(post_id);
