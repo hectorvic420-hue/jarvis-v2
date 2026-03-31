@@ -1,3 +1,4 @@
+import "dotenv/config";
 import "./memory/db"; // inicializa DB antes que todo
 // @ts-ignore
 import express from "express";
