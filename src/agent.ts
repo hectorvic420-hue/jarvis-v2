@@ -264,6 +264,7 @@ export async function runAgent(
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(toolCall.function.arguments || "{}") as Record<string, unknown>;
+        console.log(`[AGENT] Tool args para ${toolName}:`, args);
       } catch {
         messages.push({
           role:         "tool",
@@ -277,13 +278,17 @@ export async function runAgent(
       try {
         const raw       = await executeToolWithTimeout(tool, args, userId);
         const truncated = truncateToolResponse(raw);
+        console.log(`[AGENT] Salida de tool ${toolName}:`, truncated.substring(0, 100) + "...");
+        
+        // La propiedad 'name' en el role 'tool' no es estándar en Groq/OpenAI, puede causar error 400.
+        // Solo mandamos role, tool_call_id y content.
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
-          name:         toolName,
           content:      truncated,
         });
       } catch (err) {
+        console.error(`[AGENT] Error ejecutando ${toolName}:`, err);
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
