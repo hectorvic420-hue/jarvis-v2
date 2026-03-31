@@ -6,7 +6,6 @@ const EVOLUTION_BASE_URL = process.env.EVOLUTION_API_URL?.replace(/\/$/, "") ?? 
 const EVOLUTION_API_KEY  = process.env.EVOLUTION_API_KEY ?? "";
 const INSTANCE_NAME      = process.env.EVOLUTION_INSTANCE ?? "jarvis";
 
-// Whitelist: phone numbers allowed
 const RAW_WHITELIST = process.env.WA_WHITELIST ?? "";
 const WHITELIST: Set<string> = new Set(
   RAW_WHITELIST.split(",").map((n) => n.trim()).filter(Boolean)
@@ -75,7 +74,7 @@ async function createInstance(name: string): Promise<string> {
 
 async function getPairingCode(name: string, number: string): Promise<string> {
     const res = await evRequest(`instance/connect/pairingCode/${name}?number=${number}`, "GET");
-    if (res.code) return `🔑 Tu código de vinculación de WhatsApp es: *${res.code as string}*.\n\nIngrésalo en tu teléfono (Dispositivos vinculados > Vincular con número de teléfono).`;
+    if (res.code) return `🔑 Tu código de vinculación de WhatsApp es: *${res.code as string}*.\n\nIngrésalo en tu teléfono.`;
     return "❌ No se pudo generar el código de vinculación.";
 }
 
@@ -85,19 +84,35 @@ async function getQrCode(name: string): Promise<string> {
     return "❌ No se pudo generar el código QR.";
 }
 
-// ─── Messaging exports required by routes ─────────────────────────────────────
-export async function sendText(to: string, text: string): Promise<SendResult> {
+// ─── Messaging exports (Strict compatibility with whatsapp.route.ts) ───────────
+export async function sendText(to: string, text: string, quotedId?: string): Promise<SendResult> {
     try {
         const number = to.replace(/\D/g, "");
-        const data = await evRequest(`message/sendText/${INSTANCE_NAME}`, "POST", { number, text });
+        const body: any = { number, text };
+        if (quotedId) body.quoted = { key: { id: quotedId } };
+        
+        const data = await evRequest(`message/sendText/${INSTANCE_NAME}`, "POST", body);
         return { success: true, message_id: data?.key?.id };
     } catch (err: any) {
         return { success: false, error: err.message };
     }
 }
 
-export async function sendAudio(to: string, _path: string): Promise<SendResult> {
-    return { success: false, error: "Not implemented in manager" };
+export async function sendAudio(to: string, audioPath: string): Promise<SendResult> {
+    try {
+        const number = to.replace(/\D/g, "");
+        const buffer = fs.readFileSync(audioPath);
+        const base64 = buffer.toString("base64");
+        const data = await evRequest(`message/sendMedia/${INSTANCE_NAME}`, "POST", {
+            number,
+            mediatype: "audio",
+            media: base64,
+            mimetype: "audio/ogg; codecs=opus"
+        });
+        return { success: true, message_id: data?.key?.id };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    }
 }
 
 export async function markAsRead(remoteJid: string, messageId: string): Promise<void> {
@@ -108,16 +123,27 @@ export async function markAsRead(remoteJid: string, messageId: string): Promise<
     } catch {}
 }
 
-export async function sendTyping(remoteJid: string): Promise<void> {
+export async function sendTyping(remoteJid: string, durationMs = 2000): Promise<void> {
     try {
         await evRequest(`message/sendPresence/${INSTANCE_NAME}`, "POST", { 
             number: remoteJid.replace(/\D/g, ""),
-            options: { presence: "composing", delay: 2000 }
+            options: { presence: "composing", delay: durationMs }
         });
     } catch {}
 }
 
-export async function downloadMedia(): Promise<null> { return null; }
+export async function downloadMedia(messageId: string, remoteJid: string): Promise<{ buffer: Buffer; mimetype: string } | null> {
+    try {
+        const data = await evRequest(`chat/getBase64FromMediaMessage/${INSTANCE_NAME}`, "POST", {
+            message: { key: { id: messageId, remoteJid } }
+        });
+        if (!data.base64) return null;
+        return {
+            buffer: Buffer.from(data.base64, "base64"),
+            mimetype: data.mimetype ?? "application/octet-stream"
+        };
+    } catch { return null; }
+}
 
 export function parseWebhookPayload(body: any): WaMessage | null {
     try {
@@ -130,7 +156,7 @@ export function parseWebhookPayload(body: any): WaMessage | null {
             from,
             from_number: from.replace(/\D/g, ""),
             body: data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "",
-            type: "text",
+            type: data.message?.audioMessage ? "audio" : "text",
             timestamp: Date.now(),
             is_group: from.endsWith("@g.us")
         };
