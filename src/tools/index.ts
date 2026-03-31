@@ -9,6 +9,7 @@ import { videoComposerTool }     from "./video_composer.js";
 import { voiceTool }             from "./voice.js";
 import { binanceTool }           from "./binance.js";
 import { webResearcherTool }     from "./web_researcher.js";
+import { whatsappTool }          from "./whatsapp.js";
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
@@ -23,6 +24,7 @@ export const tools: Record<string, Tool> = {
   [voiceTool.name]:             voiceTool,
   [binanceTool.name]:           binanceTool,
   [webResearcherTool.name]:     webResearcherTool,
+  [whatsappTool.name]:          whatsappTool,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
