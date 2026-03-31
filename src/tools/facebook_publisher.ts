@@ -20,11 +20,12 @@ function pageId(): string {
 }
 
 async function graphPost(endpoint: string, body: Record<string, unknown>): Promise<ApiResponse> {
-  const url = `${GRAPH_BASE}${endpoint}`;
+  const t = token();
+  const url = `${GRAPH_BASE}${endpoint}?access_token=${t}`; // Token in URL
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, access_token: token() }),
+    body: JSON.stringify(body),
   });
   const data = await res.json() as ApiResponse;
   if (!res.ok || data["error"]) {
@@ -47,7 +48,9 @@ async function graphGet(endpoint: string, params: Record<string, string> = {}): 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 async function postText(message: string): Promise<string> {
-  const data = await graphPost(`/${pageId()}/feed`, { message });
+  const pId = pageId();
+  console.log(`[FB] Intentando publicar en ${pId}...`);
+  const data = await graphPost(`/${pId}/feed`, { message });
   return `✅ Post publicado\nID: ${data.id}`;
 }
 
