@@ -8,6 +8,7 @@ import { systemControlTool }     from "./system_control.js";
 import { videoComposerTool }     from "./video_composer.js";
 import { voiceTool }             from "./voice.js";
 import { binanceTool }           from "./binance.js";
+import { webResearcherTool }     from "./web_researcher.js";
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
@@ -21,6 +22,7 @@ export const tools: Record<string, Tool> = {
   [videoComposerTool.name]:     videoComposerTool,
   [voiceTool.name]:             voiceTool,
   [binanceTool.name]:           binanceTool,
+  [webResearcherTool.name]:     webResearcherTool,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
