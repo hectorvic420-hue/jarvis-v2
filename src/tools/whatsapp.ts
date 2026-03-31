@@ -71,7 +71,7 @@ export async function sendText(to: string, text: string, _quotedId?: string): Pr
 export async function sendAudio(_to: string, _path: string): Promise<any> { return { success: false }; }
 export async function markAsRead(_jid: string, _id: string): Promise<void> {}
 export async function sendTyping(_jid: string, _ms?: number): Promise<void> {}
-export async function downloadMedia(): Promise<null> { return null; }
+export async function downloadMedia(_mid?: string, _jid?: string): Promise<{ buffer: Buffer; mimetype: string } | null> { return null; }
 export function isWhitelisted(_n: string): boolean { return true; }
 export function parseWebhookPayload(_b: any): WaMessage | null { return null; }
 
