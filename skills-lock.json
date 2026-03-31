@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "skills": {
+    "algorithmic-art": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "7c446629c20a537aba3496490550bbfddf71b3bb71904c9c0056c9daa025a330"
+    },
+    "brainstorming": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "f483c304fcde060211ffae00f49bb728536e7e7613c99db45b5b924d9fc17243"
+    },
+    "brand-guidelines": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "cf41642f38f35bcae5bbf59215f0ee629d5f6a54b4811454f6cb93bc9b12b69e"
+    },
+    "canvas-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "21e7c68d336893e4f2aa8d269854fd5e253c89cfc6dd0e74fa487fe7e96abdeb"
+    },
+    "dispatching-parallel-agents": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "e21044ae7496fc285f1df9ff3fb518a3a20bea6f5216c1f59f4987e12c769a0a"
+    },
+    "doc-coauthoring": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "62cd7744438ee2aecc986c520bb603988a78ff6aaaf70a471bf4584fe0b78dae"
+    },
+    "docx": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "150be87ff7b18f273ad07da303adb1cf2ca21cc3e76db7a2cf0373405178a278"
+    },
+    "executing-plans": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "2f709d1a2c7564f8ce6a9bb707e7f5451117ba80f8e8e2302662c29bc61246a6"
+    },
+    "express": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "df0a705a1f52619bf96ad64d073e5cebd0e231df9b59754809083eba8b91523e"
+    },
+    "finishing-a-development-branch": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "9edba9a38684c060fdc38290f640e1dc0c37de286723ac9be73bacacf7cd6f3d"
+    },
+    "gws-calendar": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "4136ed3dca267da31dee4a60a846f1ac771db12a74ee41ddb9acdbba93582fe1"
+    },
+    "gws-calendar-insert": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "f78309f53b880d442c5ddc73144e7c10765c189d6e749b6af1f9fe110028c0bf"
+    },
+    "gws-docs": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "c7a37def48dff56af458c9fea82be718e8d500cf0cb70fd21b9569f795e348d3"
+    },
+    "gws-docs-write": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "4105e14128edb68fe37590f55898b4a877b6c1db65d6cfd8d28519ab6145a93a"
+    },
+    "gws-drive": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "33e41d9cea1b9d7ec5e8439716da52105cf653e3d263e2c35416bca36bd4da84"
+    },
+    "gws-drive-upload": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "7848f602ebbd5a025e5abcfb2f58617c5de3111ad3759e1ca830e5842c4d669f"
+    },
+    "gws-gmail": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "6602dc08655b2e76da23150e15cb737440f39c9df315fab2fe231d927d05de04"
+    },
+    "gws-gmail-forward": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "0345ad204c1cd23b1a4aac5564621fdc318ee823fbbceb6ffbe2dda0093a477f"
+    },
+    "gws-gmail-read": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "95d948cd19d8a2de144127a87174486e59231032f04cad75f03a627f37dc04f2"
+    },
+    "gws-gmail-reply": {
+      "source": "googleworkspace/cli",
+      "sourceType": "github",
+      "computedHash": "49cff38033f0aa3f6eeafdfcc351f69e1fdde0fb9d060106371e89f49af9568f"
+    },
+    "mui": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "d948fb02f497077f0c306aa30bc3ff939a8a74d89034a0260a6f3d1d0d36e470"
+    },
+    "nextjs": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "18a7d59f2a07711d010ec4e9e1dccbf47630feb56534dff0d0324571d32612e7"
+    },
+    "nodejs": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "f308e5f23c235d370a3abe50fc075c019bee16b74601bdc0080fcaa7a796dcba"
+    },
+    "pdf": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "37226d4220d844377e6b2a386c51a011df4cd130855ff0b80bcc22f9c28abd57"
+    },
+    "pptx": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "2275e4d8dba1790d52f6619b3e2fed04edc948beef545a2ad18e4a1be644426d"
+    },
+    "prisma": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "6ff908d47716f4543d426d6e5ec33a229c2c60a52583b5562dbe6b0a6749c06c"
+    },
+    "react": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "1141bc204d1aebba183d0f4abc165cca3b52350c184b41853da38c053f8b80d6"
+    },
+    "receiving-code-review": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "2760c85d4f4117b0006e7ba755f4bbd61f8f4c185f347999763c97f507274e30"
+    },
+    "requesting-code-review": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "246e65cd72a7e360987d94e6c61564ce6d71c6361d1784d529d70e4cbbe8522d"
+    },
+    "route-tester": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "b26dce77fe36404f9df99f7e59d16a7c0968b910d2f067252e6ebca8e0d2c47f"
+    },
+    "shadcn": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "87bbd8ccee51384edbe07a18343487fecb5b782e53ec2d7456d4c853633992d4"
+    },
+    "skill-developer": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "ff4db7b493db0d697d918dc49e60106e5e88d9a086d6a6fc78435b62b1b9409c"
+    },
+    "subagent-driven-development": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "a197f8e5fba5ea59013e1adbaa90dd42db35de8f074feca200c8038de584a83b"
+    },
+    "systematic-debugging": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "72e9ab72627e4fd8ed26a582e82309a98ecdc4f6e1c99418430ac05682c9e91d"
+    },
+    "tailwindcss": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "b1341efcc0dbeaa4c59ab4396f6a4688ad8bdf4073a35ed9e2b3b451041c8ae5"
+    },
+    "tanstack-query": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "3dceb7426dd0be5fab8bfbabe55550aa53e3f952eade3e38d38dc1d3970eeef5"
+    },
+    "tanstack-router": {
+      "source": "blencorp/claude-code-kit",
+      "sourceType": "github",
+      "computedHash": "ae795d4d6cd03b457280a9dbcc0b1f3ac3528ab40116bc1f12b1d008020c2e8f"
+    },
+    "test-driven-development": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "126f1ebf6ccd414f42544f6e83d8cc5adb089e1108eaffb7c400701e37eecd9f"
+    },
+    "using-git-worktrees": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "52bbb4b6e80918e83e92a1514f3b3757712154c2a8a42de24919e48a794c54fc"
+    },
+    "using-superpowers": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "af9db85109491dbe11f36b13724835f0f03583a5e026bf496b3b257e27a3f753"
+    },
+    "verification-before-completion": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "9b446f0c7fe1cfb560b1d34439523b1a76d5f177290007b2c053a1c749a4a8ba"
+    },
+    "writing-plans": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "bfaed11054ad8021c66860244e2d2e0d1eca483ae9f5fbfcb956e99c61f5c3d7"
+    },
+    "writing-skills": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "b0e3065034610df41b9119445b5fd052042752bb3e598ca66aea2403a7c7685e"
+    },
+    "xlsx": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "cb7fba2177d0d35d14b3244272b25d1b05246e99b3468a087fe06c84193dbd20"
+    }
+  }
+}
