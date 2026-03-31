@@ -6,6 +6,32 @@ const EVOLUTION_BASE_URL = process.env.EVOLUTION_API_URL?.replace(/\/$/, "") ?? 
 const EVOLUTION_API_KEY  = process.env.EVOLUTION_API_KEY ?? "";
 const INSTANCE_NAME      = process.env.EVOLUTION_INSTANCE ?? "jarvis";
 
+// Whitelist: phone numbers allowed
+const RAW_WHITELIST = process.env.WA_WHITELIST ?? "";
+const WHITELIST: Set<string> = new Set(
+  RAW_WHITELIST.split(",").map((n) => n.trim()).filter(Boolean)
+);
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+export interface WaMessage {
+  message_id: string;
+  from: string;
+  from_number: string;
+  body: string;
+  type: "text" | "audio" | "image" | "document" | "video" | "sticker" | "unknown";
+  timestamp: number;
+  is_group: boolean;
+  group_id?: string;
+  media_url?: string;
+  media_mimetype?: string;
+}
+
+export interface SendResult {
+  success: boolean;
+  message_id?: string;
+  error?: string;
+}
+
 // ─── HTTP Helpers ─────────────────────────────────────────────────────────────
 async function evRequest(endpoint: string, method: string, body?: object): Promise<any> {
     const url = `${EVOLUTION_BASE_URL}/${endpoint}`;
@@ -23,6 +49,13 @@ async function evRequest(endpoint: string, method: string, body?: object): Promi
         throw new Error(`Evolution API ${response.status}: ${err}`);
     }
     return response.json();
+}
+
+// ─── Whitelist check ──────────────────────────────────────────────────────────
+export function isWhitelisted(number: string): boolean {
+  if (WHITELIST.size === 0) return true;
+  const clean = number.replace(/\D/g, "");
+  return WHITELIST.has(clean);
 }
 
 // ─── Instance Management ──────────────────────────────────────────────────────
@@ -48,15 +81,60 @@ async function getPairingCode(name: string, number: string): Promise<string> {
 
 async function getQrCode(name: string): Promise<string> {
     const res = await evRequest(`instance/connect/generateQrCode/${name}`, "GET");
-    if (res.base64) return `📸 Código QR generado. Escanéalo en WhatsApp para vincular.\n\n(Base64 data disponible)`;
+    if (res.base64) return `📸 Código QR generado.`;
     return "❌ No se pudo generar el código QR.";
 }
 
-// ─── Send Tools ────────────────────────────────────────────────────────────────
-async function sendText(to: string, text: string): Promise<string> {
-    const number = to.replace(/\D/g, "");
-    await evRequest(`message/sendText/${INSTANCE_NAME}`, "POST", { number, text });
-    return `✅ Mensaje enviado a ${number}`;
+// ─── Messaging exports required by routes ─────────────────────────────────────
+export async function sendText(to: string, text: string): Promise<SendResult> {
+    try {
+        const number = to.replace(/\D/g, "");
+        const data = await evRequest(`message/sendText/${INSTANCE_NAME}`, "POST", { number, text });
+        return { success: true, message_id: data?.key?.id };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    }
+}
+
+export async function sendAudio(to: string, _path: string): Promise<SendResult> {
+    return { success: false, error: "Not implemented in manager" };
+}
+
+export async function markAsRead(remoteJid: string, messageId: string): Promise<void> {
+    try {
+        await evRequest(`message/readMessages/${INSTANCE_NAME}`, "POST", { 
+            readMessages: [{ remoteJid, id: messageId, fromMe: false }] 
+        });
+    } catch {}
+}
+
+export async function sendTyping(remoteJid: string): Promise<void> {
+    try {
+        await evRequest(`message/sendPresence/${INSTANCE_NAME}`, "POST", { 
+            number: remoteJid.replace(/\D/g, ""),
+            options: { presence: "composing", delay: 2000 }
+        });
+    } catch {}
+}
+
+export async function downloadMedia(): Promise<null> { return null; }
+
+export function parseWebhookPayload(body: any): WaMessage | null {
+    try {
+        const data = body?.data;
+        if (!data) return null;
+        const key = data.key ?? {};
+        const from = key.remoteJid ?? "";
+        return {
+            message_id: key.id ?? "",
+            from,
+            from_number: from.replace(/\D/g, ""),
+            body: data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "",
+            type: "text",
+            timestamp: Date.now(),
+            is_group: from.endsWith("@g.us")
+        };
+    } catch { return null; }
 }
 
 // ─── Tool Registry ────────────────────────────────────────────────────────────
@@ -67,8 +145,8 @@ export const whatsappTool: Tool = {
         type: "object",
         properties: {
             action: { type: "string", enum: ["create", "qr", "pairing", "send"] },
-            name:   { type: "string", description: "Nombre de la instancia (ej: 'jarvis')" },
-            number: { type: "string", description: "Número de teléfono para vincular (con código de país, ej: 521...)" },
+            name:   { type: "string", description: "Nombre de la instancia" },
+            number: { type: "string", description: "Número con código de país para vincular" },
             text:   { type: "string", description: "Texto a enviar" },
             to:     { type: "string", description: "Número de destino" }
         },
@@ -77,17 +155,14 @@ export const whatsappTool: Tool = {
     async execute(params, _chatId) {
         const { action, name, number, text, to } = params as Record<string, any>;
         const inst = name ?? INSTANCE_NAME;
-
         try {
             switch (action) {
                 case "create":  return await createInstance(inst);
                 case "qr":      return await getQrCode(inst);
                 case "pairing": return await getPairingCode(inst, number as string);
-                case "send":    return await sendText(to as string, text as string);
-                default:        return "❌ Acción de WhatsApp desconocida.";
+                case "send":    const r = await sendText(to as string, text as string); return r.success ? "✅ Enviado" : `❌ ${r.error as string}`;
+                default:        return "❌ Acción desconocida.";
             }
-        } catch (err: any) {
-            return `❌ Error en WhatsApp: ${err.message as string}`;
-        }
+        } catch (err: any) { return `❌ Error en WA: ${err.message as string}`; }
     }
 };
