@@ -122,13 +122,18 @@ async function createWorkflow(
   nodes: unknown[] = [],
   connections: unknown = {}
 ): Promise<string> {
-  const w = await n8nPost("/workflows", {
+  const payload = {
     name,
     nodes,
     connections,
-    settings: { executionOrder: "v1" },
-  });
-  return `✅ Workflow creado\nID: ${w.id}\nNombre: ${w.name}`;
+    settings: {},
+    staticData: {},
+  };
+
+  console.log(`[N8N] Payload de creación para "${name}":`, JSON.stringify(payload));
+
+  const w = await n8nPost("/workflows", payload);
+  return `✅ Workflow creado | ID: ${w.id} | Nodos: ${nodes.length}`;
 }
 
 async function updateWorkflow(
