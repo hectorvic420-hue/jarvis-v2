@@ -73,14 +73,19 @@ async function createInstance(name: string): Promise<string> {
 }
 
 async function getPairingCode(name: string, number: string): Promise<string> {
-    const res = await evRequest(`instance/connect/pairingCode/${name}?number=${number}`, "GET");
-    if (res.code) return `🔑 Tu código de vinculación de WhatsApp es: *${res.code as string}*.\n\nIngrésalo en tu teléfono.`;
-    return "❌ No se pudo generar el código de vinculación.";
+    const cleanNumber = number.replace(/\D/g, "");
+    try {
+        const res = await evRequest(`instance/connect/pairingCode/${name}?number=${cleanNumber}`, "GET");
+        if (res.code) return `🔑 Tu código de vinculación de WhatsApp es: *${res.code as string}*.\n\nIngrésalo en tu teléfono (Dispositivos vinculados > Vincular con número de teléfono).`;
+        return `❌ Error: La API no devolvió un código. Respuesta: ${JSON.stringify(res)}`;
+    } catch (err: any) {
+        return `❌ Error en el servidor de WhatsApp: ${err.message as string}`;
+    }
 }
 
 async function getQrCode(name: string): Promise<string> {
     const res = await evRequest(`instance/connect/generateQrCode/${name}`, "GET");
-    if (res.base64) return `📸 Código QR generado.`;
+    if (res.base64) return `📸 Código QR generado. Escanéalo en WhatsApp para vincular.`;
     return "❌ No se pudo generar el código QR.";
 }
 
@@ -89,7 +94,9 @@ export async function sendText(to: string, text: string, quotedId?: string): Pro
     try {
         const number = to.replace(/\D/g, "");
         const body: any = { number, text };
-        if (quotedId) body.quoted = { key: { id: quotedId } };
+        if (quotedId) {
+            body.options = { quoted: { key: { id: quotedId } } };
+        }
         
         const data = await evRequest(`message/sendText/${INSTANCE_NAME}`, "POST", body);
         return { success: true, message_id: data?.key?.id };
