@@ -39,12 +39,26 @@ const INFORMATIVE_PATTERNS: RegExp[] = [
   /^(dónde|donde)\s+(está|queda|se\s+ubica|se\s+encuentra)\s+[a-z]/i,
 ];
 
-export function needsToolUse(userMessage: string): boolean {
-  const trimmed = userMessage.trim();
-  for (const pattern of INFORMATIVE_PATTERNS) {
-    if (pattern.test(trimmed)) return false;
+export function needsToolUse(text: string): boolean {
+  // Patrones informativos que indican que la tarea ya terminó
+  const informativePatterns = [
+    /el post ha sido publicado/i,
+    /la publicación se realizó/i,
+    /tarea completada/i,
+    /listo, he terminado/i,
+    /aquí tienes los resultados/i,
+    /no hay más acciones/i,
+    /mensaje enviado/i,
+    /evento creado/i,
+    /archivo guardado/i,
+    /publicación exitosa/i,
+  ];
+
+  if (informativePatterns.some((p) => p.test(text))) {
+    return false;
   }
-  return true;
+
+  return text.includes("tool_use") || /\{.*"action":.*\}/.test(text) || text.includes("execute_tool");
 }
 
 // ─── Loop detection ───────────────────────────────────────────────────────────
