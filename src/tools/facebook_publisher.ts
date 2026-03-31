@@ -47,18 +47,53 @@ async function graphGet(endpoint: string, params: Record<string, string> = {}): 
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
+async function getPageCredentials(targetName = "David Academy"): Promise<{ id: string; token: string }> {
+  console.log(`[FB] Buscando credenciales para: ${targetName}...`);
+  const data = await graphGet("/me/accounts", { fields: "id,name,access_token" });
+  const page = data.data?.find((p: any) => 
+    p.name.toLowerCase().includes(targetName.toLowerCase()) || p.id === pageId()
+  );
+
+  if (!page || !page.access_token) {
+    console.error(`[FB] No encontré credenciales específicas para '${targetName}'. Usando default.`);
+    return { id: pageId(), token: token() };
+  }
+
+  console.log(`[FB] Credenciales encontradas para '${page.name}' (ID: ${page.id})`);
+  return { id: page.id, token: page.access_token };
+}
+
 async function postText(message: string): Promise<string> {
-  const pId = pageId();
-  console.log(`[FB] Intentando publicar en ${pId}...`);
-  const data = await graphPost(`/${pId}/feed`, { message });
-  return `✅ Post publicado\nID: ${data.id}`;
+  const { id, token: pToken } = await getPageCredentials();
+  const url = `${GRAPH_BASE}/${id}/feed?access_token=${pToken}`;
+  
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+
+  const data = await res.json() as ApiResponse;
+  if (!res.ok || data["error"]) {
+    throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Error ${res.status}`);
+  }
+  return `✅ Post publicado en ${id}\nID: ${data.id}`;
 }
 
 async function postPhoto(message: string, photoUrl: string): Promise<string> {
-  const data = await graphPost(`/${pageId()}/photos`, {
-    message,
-    url: photoUrl,
+  const { id, token: pToken } = await getPageCredentials();
+  const url = `${GRAPH_BASE}/${id}/photos?access_token=${pToken}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, url: photoUrl }),
   });
+
+  const data = await res.json() as ApiResponse;
+  if (!res.ok || data["error"]) {
+    throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Error ${res.status}`);
+  }
   return `✅ Foto publicada\nID: ${data.post_id || data.id}`;
 }
 
