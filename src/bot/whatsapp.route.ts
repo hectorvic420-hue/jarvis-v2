@@ -17,8 +17,17 @@ import {
 import { transcribeBuffer } from "../tools/voice";
 import { textToSpeech }     from "../tools/voice";
 
-// Import your existing agent runner (adjust path as needed)
-// import { runAgent } from "../agent";
+import { runAgent } from "../agent.js";
+import { tools as toolRegistry } from "../tools/index.js";
+
+const SYSTEM_PROMPT =
+  `Eres Jarvis, un agente de IA personal altamente capaz, preciso y eficiente. ` +
+  `Ayudas a tu usuario con tareas complejas usando las herramientas disponibles. ` +
+  `Responde siempre en el mismo idioma que el usuario (por defecto, español). ` +
+  `Sé directo, concreto y útil. Evita respuestas genéricas. ` +
+  `Cuando uses herramientas, explica brevemente qué hiciste y qué encontraste. ` +
+  `Nunca inventes datos — usa las herramientas para información real. ` +
+  `Si no puedes completar una tarea, explica con claridad por qué.`;
 
 const router = Router();
 
@@ -73,12 +82,17 @@ async function processMessage(msg: WaMessage): Promise<void> {
   if (!userInput.trim()) return;
 
   try {
-    // ── Call your agent ───────────────────────────────────────────────────────
-    // const agentResponse = await runAgent(userInput, { source: "whatsapp", from: msg.from_number });
-    // const replyText = agentResponse.text;
-
-    // Placeholder until agent is wired:
-    const replyText = `[JARVIS] Recibí: "${userInput}" — agente no conectado aún.`;
+    const tools = Object.values(toolRegistry);
+    const agentResult = await runAgent(userInput, { 
+      tools, 
+      systemPrompt: SYSTEM_PROMPT, 
+      userId: msg.from_number 
+    });
+    
+    // Add warning if exists (e.g. Gemini fallback warning)
+    const replyText = agentResult.warning 
+      ? `${agentResult.warning}\n\n${agentResult.response}`
+      : agentResult.response;
 
     // ── Send response ─────────────────────────────────────────────────────────
     // Split long messages (WA limit ~4096 chars)
