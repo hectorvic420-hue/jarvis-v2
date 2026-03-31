@@ -39,15 +39,28 @@ const INFORMATIVE_PATTERNS: RegExp[] = [
   /^(dónde|donde)\s+(está|queda|se\s+ubica|se\s+encuentra)\s+[a-z]/i,
 ];
 
+function isConversational(text: string): boolean {
+  const trimmed = text.trim().toLowerCase();
+  const greetings = [/hola/i, /buenos días/i, /buenas tardes/i, /buenas noches/i, /qué tal/i, /que tal/i, /ey/i];
+  const thanks = [/gracias/i, /perfecto/i, /ok/i, /entendido/i, /listo/i, /muy bien/i, /felicito/i];
+  
+  if (greetings.some(p => p.test(trimmed)) && trimmed.length < 15) return true;
+  if (thanks.some(p => p.test(trimmed)) && trimmed.length < 25) return true;
+  
+  return false;
+}
+
 export function needsToolUse(text: string): boolean {
+  // Para respuestas del LLM: verificar si llamó a una herramienta
+  if (text.includes("tool_use") || /\{.*"action":.*\}/.test(text) || text.includes("execute_tool")) {
+    return true;
+  }
+
   // Patrones informativos que indican que la tarea ya terminó
   const informativePatterns = [
     /el post ha sido publicado/i,
     /la publicación se realizó/i,
     /tarea completada/i,
-    /listo, he terminado/i,
-    /aquí tienes los resultados/i,
-    /no hay más acciones/i,
     /mensaje enviado/i,
     /evento creado/i,
     /archivo guardado/i,
@@ -58,7 +71,7 @@ export function needsToolUse(text: string): boolean {
     return false;
   }
 
-  return text.includes("tool_use") || /\{.*"action":.*\}/.test(text) || text.includes("execute_tool");
+  return false;
 }
 
 // ─── Loop detection ───────────────────────────────────────────────────────────
@@ -157,7 +170,7 @@ export async function runAgent(
     messages.push({ role: m.role as "user" | "assistant" | "tool", content: m.content });
   });
 
-  const shouldUseTool = tools.length > 0 && needsToolUse(userMessage);
+  const shouldUseTool = tools.length > 0 && !isConversational(userMessage);
   const userContent   = shouldUseTool
     ? userMessage + buildActionReminder(toolNames)
     : userMessage;
