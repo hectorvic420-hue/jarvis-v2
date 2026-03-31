@@ -1,5 +1,4 @@
 import { Tool } from "../shared/types.js";
-import axios from "axios";
 
 const TAVILY_API_URL = "https://api.tavily.com/search";
 
@@ -8,15 +7,20 @@ async function searchWeb(query: string): Promise<string> {
     if (!apiKey) return "❌ Error: TAVILY_API_KEY no configurada en el .env.";
 
     try {
-        const response = await axios.post(TAVILY_API_URL, {
-            api_key: apiKey,
-            query,
-            search_depth: "advanced",
-            include_answer: true,
-            max_results: 5,
+        const response = await fetch(TAVILY_API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                api_key: apiKey,
+                query,
+                search_depth: "advanced",
+                include_answer: true,
+                max_results: 5,
+            }),
         });
 
-        const data   = response.data;
+        if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+        const data = await response.json() as any;
         const answer = data.answer ? `💡 Resumen: ${data.answer as string}\n\n` : "";
         const results = (data.results as any[])
             .map((r, i) => `${i + 1}. [${r.title as string}](${r.url as string})\n   ${r.content as string}`)
@@ -33,12 +37,17 @@ async function extractContent(url: string): Promise<string> {
     if (!apiKey) return "❌ Error: TAVILY_API_KEY no configurada.";
 
     try {
-        const response = await axios.post("https://api.tavily.com/extract", {
-            api_key: apiKey,
-            urls: [url],
+        const response = await fetch("https://api.tavily.com/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                api_key: apiKey,
+                urls: [url],
+            }),
         });
 
-        const data = response.data;
+        if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+        const data = await response.json() as any;
         if (data.results && data.results.length > 0) {
             return `📄 *Contenido extraído de ${url}:*\n\n${data.results[0].raw_content.slice(0, 5000) as string}`;
         }
