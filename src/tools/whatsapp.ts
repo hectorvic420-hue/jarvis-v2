@@ -39,12 +39,16 @@ async function evRequest(endpoint: string, method: string, body?: object): Promi
 // ─── Instance Management ──────────────────────────────────────────────────────
 async function createInstance(name: string): Promise<string> {
     try {
-        await evRequest("instance/create", "POST", { 
-            instanceName: name, qrcode: true 
+        await evRequest("instance/create", "POST", {
+            instanceName: name,
+            integration: "WHATSAPP-BAILEYS",
+            qrcode: false,
         });
-        return `✅ Instancia "${name}" creada.`;
+        return `✅ Instancia "${name}" creada. Ahora pide el código de vinculación con tu número.`;
     } catch (err: any) {
-        if (err.message.includes("403")) return `⚠️ La instancia "${name}" ya existe.`;
+        if (err.message.includes("403") || err.message.includes("already")) {
+            return `⚠️ La instancia "${name}" ya existe. Pide el código de vinculación con tu número.`;
+        }
         throw err;
     }
 }
@@ -52,11 +56,14 @@ async function createInstance(name: string): Promise<string> {
 async function getPairingCode(name: string, number: string): Promise<string> {
     const cleanNumber = number.replace(/\D/g, "");
     try {
-        const res = await evRequest(`instance/connect/pairingCode/${name}?number=${cleanNumber}`, "GET");
-        if (res.code) return `🔑 Código: *${res.code as string}*.\n\nVincúlalo en tu teléfono.`;
-        return `❌ Error: La API no devolvió un código.`;
+        const res = await evRequest(`instance/connect/${name}`, "GET");
+        if (res.code) return `🔑 Código de vinculación: *${res.code as string}*\n\nEn tu WhatsApp → Dispositivos vinculados → Vincular con número de teléfono → ingresa el código.`;
+        // Si no viene en el connect, solicitar explícitamente
+        const res2 = await evRequest(`instance/connect/pairingCode/${name}`, "POST", { number: cleanNumber });
+        if (res2.code) return `🔑 Código de vinculación: *${res2.code as string}*\n\nEn tu WhatsApp → Dispositivos vinculados → Vincular con número de teléfono → ingresa el código.`;
+        return `❌ La API no devolvió un código. Verifica que la instancia esté creada.`;
     } catch (err: any) {
-        return `❌ Error: ${err.message as string}`;
+        return `❌ Error obteniendo código: ${err.message as string}`;
     }
 }
 
