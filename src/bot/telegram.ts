@@ -130,7 +130,7 @@ export function createTelegramBot(): Bot<BotCtx> {
       return;
     }
 
-    const list = facts.map((f, i) => `${i + 1}. ${f}`).join("\n");
+    const list = facts.map((f, i) => `${i + 1}. *${f.key}*: ${f.value}`).join("\n");
     await ctx.reply(`🧠 *Memoria (${facts.length} hechos):*\n\n${list}`, {
       parse_mode: "Markdown",
     });

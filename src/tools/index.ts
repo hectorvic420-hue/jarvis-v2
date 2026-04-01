@@ -4,7 +4,7 @@ import { metaAdsTool }           from "./meta_ads.js";
 import { n8nManagerTool }        from "./n8n_manager.js";
 import { googleWorkspaceTool }   from "./google_workspace.js";
 import { imageGeneratorTool }    from "./image_generator.js";
-import { systemControlTool }     from "./system_control.js";
+import { systemControlTool, heartbeatTool } from "./system_control.js";
 import { videoComposerTool }     from "./video_composer.js";
 import { voiceTool }             from "./voice.js";
 import { binanceTool }           from "./binance.js";

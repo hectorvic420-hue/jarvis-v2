@@ -1,6 +1,7 @@
 import { exec } from "child_process";
 import os from "os";
 import { promisify } from "util";
+import { Tool } from "../shared/types.js";
 
 const execAsync = promisify(exec);
 const MAX_OUTPUT_CHARS = 3000;
@@ -53,7 +54,7 @@ export function getSystemInfo(): string {
   const memTotal = os.totalmem();
   const memFree = os.freemem();
   const uptimeSec = os.uptime();
-  
+
   return [
     `🖥️ *Información del Sistema*`,
     `OS: ${os.type()} ${os.release()} (${os.arch()})`,
@@ -63,3 +64,48 @@ export function getSystemInfo(): string {
     `Node.js: ${process.version}`
   ].join("\n");
 }
+
+// ─── Tool exports ─────────────────────────────────────────────────────────────
+
+export const systemControlTool: Tool = {
+  name: "system_control",
+  description:
+    "Ejecuta comandos seguros del sistema operativo y obtiene información del servidor (CPU, RAM, uptime).",
+  parameters: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["run_command", "get_info"],
+        description: "run_command: ejecuta un comando; get_info: retorna métricas del sistema",
+      },
+      command: { type: "string", description: "Comando a ejecutar (solo para run_command)" },
+    },
+    required: ["action"],
+  },
+  async execute(params, _chatId) {
+    const { action, command } = params as Record<string, string>;
+    switch (action) {
+      case "run_command":
+        if (!command) return "❌ Falta parámetro: command";
+        return runCommand(command);
+      case "get_info":
+        return getSystemInfo();
+      default:
+        return `❌ Acción desconocida: ${action}`;
+    }
+  },
+};
+
+export const heartbeatTool: Tool = {
+  name: "heartbeat",
+  description: "Verifica que el agente está activo y retorna el estado básico del sistema.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+  async execute(_params, _chatId) {
+    return `✅ JARVIS activo\n${getSystemInfo()}`;
+  },
+};
