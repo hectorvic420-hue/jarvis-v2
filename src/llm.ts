@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
 import { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
 import OpenAI from "openai";
@@ -34,13 +35,14 @@ export interface LLMTool {
 export interface LLMResponse {
   content: string | null;
   tool_calls?: ToolCall[];
-  provider: "groq" | "openrouter" | "gemini";
+  provider: "claude" | "groq" | "openrouter" | "gemini";
   usedFallback: boolean;
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const LLM_TIMEOUT_MS   = 120_000;
+const CLAUDE_MODEL     = "claude-sonnet-4-6";
 const GROQ_MODEL       = "llama-3.3-70b-versatile";
 const OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct";
 const GEMINI_MODEL     = "gemini-1.5-flash";
@@ -60,6 +62,90 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 // ─── Providers ───────────────────────────────────────────────────────────────
+
+async function callClaude(
+  messages: LLMMessage[],
+  tools?: LLMTool[]
+): Promise<LLMResponse> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const systemMsg = messages.find((m) => m.role === "system");
+  const chatMessages = messages.filter((m) => m.role !== "system");
+
+  // Convertir mensajes al formato de Anthropic
+  const anthropicMessages: Anthropic.MessageParam[] = chatMessages.map((m) => {
+    if (m.role === "tool") {
+      return {
+        role: "user" as const,
+        content: [{
+          type: "tool_result" as const,
+          tool_use_id: m.tool_call_id!,
+          content: m.content ?? "",
+        }],
+      };
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      const content: any[] = [];
+      if (m.content) content.push({ type: "text", text: m.content });
+      for (const tc of m.tool_calls) {
+        content.push({
+          type: "tool_use",
+          id: tc.id,
+          name: tc.function.name,
+          input: JSON.parse(tc.function.arguments || "{}"),
+        });
+      }
+      return { role: "assistant" as const, content };
+    }
+    return {
+      role: m.role as "user" | "assistant",
+      content: m.content ?? "",
+    };
+  });
+
+  // Convertir tools al formato de Anthropic
+  const anthropicTools: Anthropic.Tool[] | undefined = tools?.map((t) => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters as Anthropic.Tool["input_schema"],
+  }));
+
+  const params: Anthropic.MessageCreateParamsNonStreaming = {
+    model:      CLAUDE_MODEL,
+    max_tokens: 4096,
+    system:     systemMsg?.content ?? undefined,
+    messages:   anthropicMessages,
+    ...(anthropicTools?.length ? { tools: anthropicTools } : {}),
+  };
+
+  const res = await withTimeout(
+    client.messages.create(params),
+    LLM_TIMEOUT_MS,
+    "Claude"
+  );
+
+  // Extraer tool_calls y texto
+  const toolUseBlocks = res.content.filter((b) => b.type === "tool_use") as any[];
+  const textBlock     = res.content.find((b) => b.type === "text") as any | undefined;
+
+  const toolCalls: ToolCall[] | undefined = toolUseBlocks.length > 0
+    ? toolUseBlocks.map((b) => ({
+        id:   b.id,
+        type: "function" as const,
+        function: {
+          name:      b.name,
+          arguments: JSON.stringify(b.input),
+        },
+      }))
+    : undefined;
+
+  return {
+    content:      textBlock?.text ?? null,
+    tool_calls:   toolCalls,
+    provider:     "claude",
+    usedFallback: false,
+  };
+}
 
 async function callGroq(
   messages: LLMMessage[],
@@ -227,12 +313,21 @@ async function callGemini(
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Cadena de fallback: Groq → OpenRouter → Gemini.
+ * Cadena de fallback: Claude → Groq → OpenRouter → Gemini.
  */
 export async function callLLM(
   messages: LLMMessage[],
   tools?: LLMTool[]
 ): Promise<LLMResponse> {
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      console.log("[LLM] Intentando Claude...");
+      return await callClaude(messages, tools);
+    } catch (err) {
+      console.warn("[LLM] Claude falló:", (err as Error).message);
+    }
+  }
+
   try {
     console.log("[LLM] Intentando Groq...");
     return await callGroq(messages, tools);

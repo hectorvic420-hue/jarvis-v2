@@ -8,6 +8,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.81.0",
     "@google/generative-ai": "^0.24.1",
     "better-sqlite3": "^11.5.0",
     "dotenv": "^16.4.5",
