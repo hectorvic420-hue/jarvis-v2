@@ -72,6 +72,8 @@ export const SYSTEM_PROMPT =
   `- n8n/WhatsApp/Web Research: Úsalos para dominar el mercado. ` +
   `Habla siempre en español, con proactividad, ingenio y una mentalidad orientada a RESULTADOS y MONETIZACIÓN.`;
 
+export const systemPrompt = SYSTEM_PROMPT;
+
 /**
  * Ejecuta una tool por nombre con los parámetros dados
  * Devuelve string con el resultado o error formateado
