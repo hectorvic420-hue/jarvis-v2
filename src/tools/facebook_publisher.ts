@@ -100,6 +100,32 @@ async function quickPost(pageIdOrName: string | undefined, message: string): Pro
   return `✅ Publicado en ${id}\nID: ${data.id}`;
 }
 
+async function postImage(pageIdOrName: string | undefined, imageUrl: string, message: string): Promise<string> {
+  const { id, token: pToken } = await findPageCredentials(pageIdOrName);
+  const url = `${GRAPH_BASE}/${id}/photos?access_token=${pToken}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: imageUrl, message }),
+  });
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data.error?.message || "Error publicando imagen");
+  return `✅ Imagen publicada en ${id}\nPost ID: ${data.post_id ?? data.id}\nURL imagen: ${imageUrl}`;
+}
+
+async function postVideo(pageIdOrName: string | undefined, videoUrl: string, description: string, title: string): Promise<string> {
+  const { id, token: pToken } = await findPageCredentials(pageIdOrName);
+  const url = `${GRAPH_BASE}/${id}/videos?access_token=${pToken}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_url: videoUrl, description, title }),
+  });
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data.error?.message || "Error publicando video");
+  return `✅ Video publicado en ${id}\nVideo ID: ${data.id}\nURL video: ${videoUrl}`;
+}
+
 // ─── Tool export ──────────────────────────────────────────────────────────────
 
 export const facebookPublisherTool: Tool = {
@@ -108,30 +134,36 @@ export const facebookPublisherTool: Tool = {
   parameters: {
     type: "object",
     properties: {
-      action: { 
-          type: "string", 
-          enum: ["post_text", "get_insights", "list_pages"],
-          description: "Acción a ejecutar" 
+      action: {
+          type: "string",
+          enum: ["post_text", "post_image", "post_video", "get_insights", "list_pages"],
+          description: "Acción a ejecutar"
       },
-      page_id: { 
-          type: "string", 
-          description: "ID o Nombre de la página (ej: 'David Academy' o '123456...')" 
+      page_id: {
+          type: "string",
+          description: "ID o Nombre de la página (ej: 'David Academy' o '123456...')"
       },
-      message: { type: "string", description: "Texto del post" },
-      post_id: { type: "string", description: "ID del post para insights específicos" }
+      message:   { type: "string", description: "Texto o descripción del post" },
+      image_url: { type: "string", description: "URL pública de la imagen a publicar (para post_image)" },
+      video_url: { type: "string", description: "URL pública del video a publicar (para post_video)" },
+      title:     { type: "string", description: "Título del video (para post_video)" },
+      post_id:   { type: "string", description: "ID del post para insights específicos" }
     },
     required: ["action"],
   },
 
   async execute(params, _chatId) {
-    const { action, page_id, message, post_id } = params as any;
+    const { action, page_id, message, image_url, video_url, title, post_id } = params as any;
     try {
         switch (action) {
-            case "post_text":      return await quickPost(page_id, message);
-            case "get_insights":   return await getInsights(page_id, post_id);
-            case "list_pages":     
+            case "post_text":    return await quickPost(page_id, message);
+            case "post_image":   return await postImage(page_id, image_url, message ?? "");
+            case "post_video":   return await postVideo(page_id, video_url, message ?? "", title ?? "");
+            case "get_insights": return await getInsights(page_id, post_id);
+            case "list_pages": {
                 const data = await graphRequest("/me/accounts", "GET", undefined, { fields: "id,name" });
                 return "📋 Páginas:\n" + data.data.map((p: any) => `• ${p.name} (ID: ${p.id})`).join("\n");
+            }
             default: return `❌ Acción desconocida: ${action}`;
         }
     } catch (err: any) { return `❌ Error FB: ${err.message as string}`; }
