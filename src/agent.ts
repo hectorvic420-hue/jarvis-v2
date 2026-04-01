@@ -20,10 +20,10 @@ export interface AgentResult {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const MAX_ITERATIONS              = 30;
+const MAX_ITERATIONS              = 100;
 const TOOL_TIMEOUT_MS             = 90_000;
-const MAX_TOOL_RESPONSE_CHARS     = 3_000;
-const CONSECUTIVE_LOOP_THRESHOLD  = 3;
+const MAX_TOOL_RESPONSE_CHARS     = 8_000;
+const CONSECUTIVE_LOOP_THRESHOLD  = 4;
 const ALTERNATING_LOOP_LENGTH     = 4;
 
 // ─── needsToolUse ─────────────────────────────────────────────────────────────
