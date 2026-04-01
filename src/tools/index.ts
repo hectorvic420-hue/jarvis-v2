@@ -10,7 +10,7 @@ import { voiceTool }             from "./voice.js";
 import { binanceTool }           from "./binance.js";
 import { webResearcherTool }     from "./web_researcher.js";
 import { whatsappTool }          from "./whatsapp.js";
-import { developerTool }         from "./developer.js";
+// developerTool (self_healing_architect) desactivado — escribe archivos corruptos en producción
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
@@ -26,7 +26,6 @@ export const tools: Record<string, Tool> = {
   [binanceTool.name]:           binanceTool,
   [webResearcherTool.name]:     webResearcherTool,
   [whatsappTool.name]:          whatsappTool,
-  [developerTool.name]:         developerTool,
   [heartbeatTool.name]:         heartbeatTool,
 };
 
