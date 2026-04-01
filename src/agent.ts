@@ -158,6 +158,30 @@ export async function runAgent(
 
     try {
       llmResponse = await callLLM(messages, activeTools);
+      
+      // ✅ INTERCEPTOR DE ALUCINACIONES: Si la IA mandó JSON en el texto pero no como tool_call
+      if (!llmResponse.tool_calls && llmResponse.content && llmResponse.content.includes("name") && llmResponse.content.includes("{")) {
+          console.log("[AGENT] Detectada posible alucinación de JSON. Intentando reparar...");
+          try {
+              // Buscamos algo que parezca un JSON entre llaves
+              const jsonMatch = llmResponse.content.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                  const possibleCall = JSON.parse(jsonMatch[0]);
+                  if (possibleCall.name && (possibleCall.parameters || possibleCall.args)) {
+                      llmResponse.tool_calls = [{
+                          id: `repair-${Date.now()}`,
+                          type: "function",
+                          function: {
+                              name:      possibleCall.name,
+                              arguments: JSON.stringify(possibleCall.parameters || possibleCall.args || {})
+                          }
+                      }];
+                      llmResponse.content = null; // Limpiamos el texto alucinante
+                      console.log(`[AGENT] Alucinación reparada: ${possibleCall.name}`);
+                  }
+              }
+          } catch (e) { console.warn("[AGENT] No se pudo reparar la alucinación de JSON."); }
+      }
     } catch (err) {
       throw new Error(`LLM no disponible: ${(err as Error).message}`);
     }
