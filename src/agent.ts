@@ -28,17 +28,6 @@ const ALTERNATING_LOOP_LENGTH     = 4;
 
 // ─── needsToolUse ─────────────────────────────────────────────────────────────
 
-const INFORMATIVE_PATTERNS: RegExp[] = [
-  /^(cómo|como)\s+(se\s+)?(funciona|hacen?|puedo|debo|puede)/i,
-  /^(qué|que)\s+(es|son|significan?|quiere\s+decir)/i,
-  /^(explica|explícame|explícanos|cuéntame|describe|dime\s+qué\s+es)/i,
-  /^(cuál|cual)\s+es\s+la\s+(diferencia|definición|historia|razón|causa)/i,
-  /^(por\s+qué|porque|porqué)\s+/i,
-  /^(quién|quien)\s+(es|fue|era|inventó|creó|fundó)/i,
-  /^(cuándo|cuando)\s+(fue|es|ocurrió|pasó|nació)/i,
-  /^(dónde|donde)\s+(está|queda|se\s+ubica|se\s+encuentra)\s+[a-z]/i,
-];
-
 function isConversational(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
   const greetings = [/hola/i, /buenos días/i, /buenas tardes/i, /buenas noches/i, /qué tal/i, /que tal/i, /ey/i];
@@ -51,27 +40,14 @@ function isConversational(text: string): boolean {
 }
 
 export function needsToolUse(text: string): boolean {
+  if (isConversational(text)) return false;
+  
   // Para respuestas del LLM: verificar si llamó a una herramienta
   if (text.includes("tool_use") || /\{.*"action":.*\}/.test(text) || text.includes("execute_tool")) {
     return true;
   }
 
-  // Patrones informativos que indican que la tarea ya terminó
-  const informativePatterns = [
-    /el post ha sido publicado/i,
-    /la publicación se realizó/i,
-    /tarea completada/i,
-    /mensaje enviado/i,
-    /evento creado/i,
-    /archivo guardado/i,
-    /publicación exitosa/i,
-  ];
-
-  if (informativePatterns.some((p) => p.test(text))) {
-    return false;
-  }
-
-  return false;
+  return true;
 }
 
 // ─── Loop detection ───────────────────────────────────────────────────────────
@@ -90,15 +66,6 @@ function detectAlternatingLoop(history: string[]): boolean {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function buildActionReminder(toolNames: string[]): string {
-  return (
-    `\n\n[SISTEMA: Tienes las siguientes herramientas disponibles: ` +
-    `${toolNames.join(", ")}. ` +
-    `Úsalas cuando sea necesario para completar la tarea. ` +
-    `No inventes datos — consulta las herramientas para información real.]`
-  );
-}
 
 function truncateToolResponse(response: string): string {
   if (response.length <= MAX_TOOL_RESPONSE_CHARS) return response;
@@ -157,7 +124,6 @@ export async function runAgent(
 
   const fullSystem = systemPrompt + factBlock + timeBlock;
 
-  const toolNames = tools.map((t) => t.name);
   const llmTools  = buildLLMTools(tools);
 
   // ── Message assembly ───────────────────────────────────────────────────
@@ -170,11 +136,8 @@ export async function runAgent(
     messages.push({ role: m.role as "user" | "assistant" | "tool", content: m.content });
   });
 
-  const shouldUseTool = tools.length > 0 && !isConversational(userMessage);
-  const userContent   = userMessage;
-
   // Agregar mensaje actual del usuario
-  messages.push({ role: "user", content: userContent });
+  messages.push({ role: "user", content: userMessage });
 
   // ── State ────────────────────────────────────────────────────────────────
   const usedTools:   string[] = [];
@@ -190,7 +153,7 @@ export async function runAgent(
     iterations++;
     console.log(`[AGENT] Iteración ${iterations}/${MAX_ITERATIONS}`);
 
-    const activeTools = shouldUseTool ? llmTools : undefined;
+    const activeTools = llmTools;
     let llmResponse: LLMResponse;
 
     try {

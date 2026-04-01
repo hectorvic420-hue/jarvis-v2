@@ -7,26 +7,29 @@ const GRAPH_BASE = "https://graph.facebook.com/v19.0";
 
 // ─── Graph API helper ─────────────────────────────────────────────────────────
 
-function token(): string {
+function globalToken(): string {
   const t = process.env.META_PAGE_ACCESS_TOKEN;
   if (!t) throw new Error("META_PAGE_ACCESS_TOKEN no configurado");
   return t;
 }
 
-function pageId(): string {
+function globalPageId(): string {
   const p = process.env.META_PAGE_ID;
   if (!p) throw new Error("META_PAGE_ID no configurado");
   return p;
 }
 
-async function graphPost(endpoint: string, body: Record<string, unknown>): Promise<ApiResponse> {
-  const t = token();
-  const url = `${GRAPH_BASE}${endpoint}?access_token=${t}`; // Token in URL
+async function graphRequest(endpoint: string, method: string, body?: object, queryParams: Record<string, string> = {}): Promise<ApiResponse> {
+  const t = globalToken();
+  const qs = new URLSearchParams({ ...queryParams, access_token: t }).toString();
+  const url = `${GRAPH_BASE}${endpoint}?${qs}`;
+  
   const res = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: body ? JSON.stringify(body) : undefined,
   });
+  
   const data = await res.json() as ApiResponse;
   if (!res.ok || data["error"]) {
     throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Graph API error ${res.status}`);
@@ -34,169 +37,49 @@ async function graphPost(endpoint: string, body: Record<string, unknown>): Promi
   return data;
 }
 
-async function graphGet(endpoint: string, params: Record<string, string> = {}): Promise<ApiResponse> {
-  const qs = new URLSearchParams({ ...params, access_token: token() }).toString();
-  const url = `${GRAPH_BASE}${endpoint}?${qs}`;
-  const res = await fetch(url);
-  const data = await res.json() as ApiResponse;
-  if (!res.ok || data["error"]) {
-    throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Graph API error ${res.status}`);
+// ─── Page Credential Finder ───────────────────────────────────────────────────
+
+async function findPageCredentials(pageIdOrName?: string): Promise<{ id: string; token: string }> {
+  console.log(`[FB] Buscando credenciales para: ${pageIdOrName || "Global Default"}...`);
+  const data = await graphRequest("/me/accounts", "GET", undefined, { fields: "id,name,access_token,tasks" });
+  
+  if (!pageIdOrName) return { id: globalPageId(), token: globalToken() };
+
+  const page = data.data?.find((p: any) => 
+    p.name.toLowerCase().includes(pageIdOrName.toLowerCase()) || p.id === pageIdOrName
+  );
+
+  if (!page || !page.access_token) {
+    console.warn(`[FB] No encontré credenciales para '${pageIdOrName}'. Usando configuración base.`);
+    return { id: globalPageId(), token: globalToken() };
   }
-  return data;
+
+  console.log(`[FB] Usando Página: '${page.name}' (ID: ${page.id})`);
+  return { id: page.id, token: page.access_token };
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
-async function getPageCredentials(targetName = "David Academy"): Promise<{ id: string; token: string }> {
-  console.log(`[FB] Buscando credenciales para: ${targetName}...`);
-  const data = await graphGet("/me/accounts", { fields: "id,name,access_token" });
-  const page = data.data?.find((p: any) => 
-    p.name.toLowerCase().includes(targetName.toLowerCase()) || p.id === pageId()
-  );
-
-  if (!page || !page.access_token) {
-    console.error(`[FB] No encontré credenciales específicas para '${targetName}'. Usando default.`);
-    return { id: pageId(), token: token() };
-  }
-
-  console.log(`[FB] Credenciales encontradas para '${page.name}' (ID: ${page.id})`);
-  return { id: page.id, token: page.access_token };
-}
-
-async function postText(message: string): Promise<string> {
-  const { id, token: pToken } = await getPageCredentials();
-  const url = `${GRAPH_BASE}/${id}/feed?access_token=${pToken}`;
+async function getInsights(pageIdOrName?: string, postId?: string): Promise<string> {
+  const { id, token: pToken } = await findPageCredentials(pageIdOrName);
   
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
-  });
-
-  const data = await res.json() as ApiResponse;
-  if (!res.ok || data["error"]) {
-    throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Error ${res.status}`);
-  }
-  return `✅ Post publicado en ${id}\nID: ${data.id}`;
-}
-
-async function postPhoto(message: string, photoUrl: string): Promise<string> {
-  const { id, token: pToken } = await getPageCredentials();
-  const url = `${GRAPH_BASE}/${id}/photos?access_token=${pToken}`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, url: photoUrl }),
-  });
-
-  const data = await res.json() as ApiResponse;
-  if (!res.ok || data["error"]) {
-    throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Error ${res.status}`);
-  }
-  return `✅ Foto publicada\nID: ${data.post_id || data.id}`;
-}
-
-async function postVideo(
-  title: string,
-  description: string,
-  videoUrl: string
-): Promise<string> {
-  const data = await graphPost(`/${pageId()}/videos`, {
-    title,
-    description,
-    file_url: videoUrl,
-  });
-  return `✅ Video publicado\nID: ${data.id}`;
-}
-
-async function postReel(
-  description: string,
-  videoUrl: string
-): Promise<string> {
-  // Step 1: initialize upload session
-  const init = await graphPost(`/${pageId()}/video_reels`, {
-    upload_phase: "start",
-  });
-
-  const videoId = init.video_id;
-
-  // Step 2: upload via URL
-  await graphPost(`/${pageId()}/video_reels`, {
-    upload_phase: "finish",
-    video_id: videoId,
-    file_url: videoUrl,
-    description,
-    video_state: "PUBLISHED",
-  });
-
-  return `✅ Reel publicado\nVideo ID: ${videoId}`;
-}
-
-async function schedulePost(
-  message: string,
-  scheduledTime: number,
-  photoUrl?: string
-): Promise<string> {
-  const body: Record<string, unknown> = {
-    message,
-    published: false,
-    scheduled_publish_time: scheduledTime,
-  };
-
-  let endpoint = `/${pageId()}/feed`;
-
-  if (photoUrl) {
-    endpoint = `/${pageId()}/photos`;
-    body.url = photoUrl;
-  }
-
-  const data = await graphPost(endpoint, body);
-  const date = new Date(scheduledTime * 1000).toLocaleString("es-CO", {
-    timeZone: "America/Bogota",
-  });
-  return `📅 Post programado\nID: ${data.id || data.post_id}\nPublicación: ${date} (COT)`;
-}
-
-async function listPosts(limit = 10): Promise<string> {
-  const data = await graphGet(`/${pageId()}/posts`, {
-    fields: "id,message,created_time,full_picture,permalink_url",
-    limit: limit.toString(),
-  });
-
-  if (!data.data?.length) return "📋 No hay posts recientes.";
-
-  const lines = [`📋 *Últimos ${data.data.length} posts*`];
-  for (const post of data.data) {
-    const date = new Date(post.created_time).toLocaleString("es-CO", {
-      timeZone: "America/Bogota",
-    });
-    const preview = post.message
-      ? post.message.substring(0, 60) + (post.message.length > 60 ? "…" : "")
-      : "[Sin texto]";
-    lines.push(`• [${date}] ${preview}\n  ID: ${post.id}`);
-  }
-  return lines.join("\n");
-}
-
-async function getInsights(postId?: string): Promise<string> {
-  let endpoint: string;
-  let fields: string;
+  let endpoint = `/${id}/insights`;
+  let fields = "page_impressions,page_impressions_unique,page_engaged_users,page_fan_adds,page_views_total";
 
   if (postId) {
     endpoint = `/${postId}/insights`;
     fields = "post_impressions,post_impressions_unique,post_engaged_users,post_clicks";
-  } else {
-    endpoint = `/${pageId()}/insights`;
-    fields =
-      "page_impressions,page_impressions_unique,page_engaged_users,page_fan_adds,page_views_total";
   }
 
-  const data = await graphGet(endpoint, { metric: fields, period: "day" });
+  // Usamos el token específico de la página para insights
+  const qs = new URLSearchParams({ metric: fields, period: "day", access_token: pToken }).toString();
+  const url = `${GRAPH_BASE}${endpoint}?${qs}`;
+  const res = await fetch(url);
+  const data = await res.json() as ApiResponse;
 
-  if (!data.data?.length) return "📊 Sin datos de insights disponibles.";
+  if (!data.data?.length) return `📊 Sin datos de insights para ${id}.`;
   
-  const lines = [postId ? `📊 *Insights del post ${postId}*` : `📊 *Insights de la página*`];
+  const lines = [postId ? `📊 *Insights Post ${postId}*` : `📊 *Insights Página: ${id}*`];
   for (const metric of data.data) {
     const value = metric.values?.[metric.values.length - 1]?.value ?? 0;
     lines.push(`• ${metric.name}: ${value}`);
@@ -204,126 +87,53 @@ async function getInsights(postId?: string): Promise<string> {
   return lines.join("\n");
 }
 
-async function listPages(): Promise<string> {
-  const data = await graphGet("/me/accounts", {
-    fields: "id,name,category,access_token,tasks",
+async function quickPost(pageIdOrName: string | undefined, message: string): Promise<string> {
+  const { id, token: pToken } = await findPageCredentials(pageIdOrName);
+  const url = `${GRAPH_BASE}/${id}/feed?access_token=${pToken}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
   });
-
-  if (!data.data?.length) return "📋 No encontré ninguna página vinculada a este token.";
-
-  const lines = ["📋 *Tus páginas de Facebook vinculadas:*"];
-  for (const page of data.data) {
-    const tasks = (page.tasks as string[]) || [];
-    const canPost = tasks.includes("MANAGE") || tasks.includes("PUBLISH_CONTENT") || tasks.includes("CREATE_CONTENT");
-    lines.push(`• *${page.name}* (ID: ${page.id})\n  Permisos: ${tasks.join(", ")}\n  Capacidad de publicar: ${canPost ? "✅ SÍ" : "❌ NO"}`);
-  }
-  return lines.join("\n");
+  const data = await res.json() as ApiResponse;
+  if (!res.ok) throw new Error(data.error?.message || "Error publicando");
+  return `✅ Publicado en ${id}\nID: ${data.id}`;
 }
 
 // ─── Tool export ──────────────────────────────────────────────────────────────
 
 export const facebookPublisherTool: Tool = {
   name: "facebook_publisher",
-  description:
-    "Publica y gestiona contenido en Facebook: texto, fotos, videos, reels, posts programados, lista posts y obtiene insights de la página o publicaciones.",
+  description: "Gestiona páginas de Facebook. Publica contenido y analiza métricas (insights).",
   parameters: {
     type: "object",
     properties: {
-      action: {
-        type: "string",
-        enum: [
-          "post_text",
-          "post_photo",
-          "post_video",
-          "post_reel",
-          "schedule_post",
-          "list_posts",
-          "list_pages",
-          "get_insights",
-        ],
-        description: "Acción a ejecutar",
+      action: { 
+          type: "string", 
+          enum: ["post_text", "get_insights", "list_pages"],
+          description: "Acción a ejecutar" 
       },
-      message: {
-        type: "string",
-        description: "Texto del post",
+      page_id: { 
+          type: "string", 
+          description: "ID o Nombre de la página (ej: 'David Academy' o '123456...')" 
       },
-      photo_url: {
-        type: "string",
-        description: "URL pública de la foto",
-      },
-      video_url: {
-        type: "string",
-        description: "URL pública del video",
-      },
-      title: {
-        type: "string",
-        description: "Título del video",
-      },
-      description: {
-        type: "string",
-        description: "Descripción del reel o video",
-      },
-      scheduled_time: {
-        type: "number",
-        description: "Unix timestamp para programar el post",
-      },
-      post_id: {
-        type: "string",
-        description: "ID del post para obtener insights específicos",
-      },
-      limit: {
-        type: "number",
-        description: "Cantidad de posts a listar",
-      },
+      message: { type: "string", description: "Texto del post" },
+      post_id: { type: "string", description: "ID del post para insights específicos" }
     },
     required: ["action"],
   },
 
   async execute(params, _chatId) {
-    const {
-      action,
-      message,
-      photo_url,
-      video_url,
-      title,
-      description,
-      scheduled_time,
-      post_id,
-      limit,
-    } = params as any;
-
-    switch (action) {
-      case "post_text":
-        if (!message) return "❌ Falta parámetro: message";
-        return postText(message);
-
-      case "post_photo":
-        if (!message || !photo_url) return "❌ Faltan parámetros: message, photo_url";
-        return postPhoto(message, photo_url);
-
-      case "post_video":
-        if (!video_url) return "❌ Falta parámetro: video_url";
-        return postVideo(title || "", description || "", video_url);
-
-      case "post_reel":
-        if (!video_url) return "❌ Falta parámetro: video_url";
-        return postReel(description || "", video_url);
-
-      case "schedule_post":
-        if (!message || !scheduled_time) return "❌ Faltan parámetros: message, scheduled_time";
-        return schedulePost(message, scheduled_time, photo_url);
-
-      case "list_posts":
-        return listPosts(limit || 10);
-
-      case "list_pages":
-        return listPages();
-
-      case "get_insights":
-        return getInsights(post_id);
-
-      default:
-        return `❌ Acción desconocida: ${action}`;
-    }
+    const { action, page_id, message, post_id } = params as any;
+    try {
+        switch (action) {
+            case "post_text":      return await quickPost(page_id, message);
+            case "get_insights":   return await getInsights(page_id, post_id);
+            case "list_pages":     
+                const data = await graphRequest("/me/accounts", "GET", undefined, { fields: "id,name" });
+                return "📋 Páginas:\n" + data.data.map((p: any) => `• ${p.name} (ID: ${p.id})`).join("\n");
+            default: return `❌ Acción desconocida: ${action}`;
+        }
+    } catch (err: any) { return `❌ Error FB: ${err.message as string}`; }
   },
 };
