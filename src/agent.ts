@@ -147,6 +147,7 @@ export async function runAgent(
   let lastProvider = "groq";
   let warning: string | undefined;
   let geminiWarned = false;
+  let loopBreaks   = 0;
 
   // ── Agent loop ───────────────────────────────────────────────────────────
   while (iterations < MAX_ITERATIONS) {
@@ -159,28 +160,27 @@ export async function runAgent(
     try {
       llmResponse = await callLLM(messages, activeTools);
       
-      // ✅ INTERCEPTOR DE ALUCINACIONES: Si la IA mandó JSON en el texto pero no como tool_call
-      if (!llmResponse.tool_calls && llmResponse.content && llmResponse.content.includes("name") && llmResponse.content.includes("{")) {
-          console.log("[AGENT] Detectada posible alucinación de JSON. Intentando reparar...");
+      // INTERCEPTOR DE ALUCINACIONES: Si el LLM mandó JSON en el texto pero no como tool_call
+      if (!llmResponse.tool_calls && llmResponse.content && llmResponse.content.includes("{")) {
           try {
-              // Buscamos algo que parezca un JSON entre llaves
               const jsonMatch = llmResponse.content.match(/\{[\s\S]*\}/);
               if (jsonMatch) {
                   const possibleCall = JSON.parse(jsonMatch[0]);
-                  if (possibleCall.name && (possibleCall.parameters || possibleCall.args)) {
+                  const callName = possibleCall.name || possibleCall.tool;
+                  if (callName && toolMap.has(callName) && (possibleCall.parameters || possibleCall.args || possibleCall.input)) {
+                      console.log(`[AGENT] Alucinación reparada: ${callName}`);
                       llmResponse.tool_calls = [{
                           id: `repair-${Date.now()}`,
                           type: "function",
                           function: {
-                              name:      possibleCall.name,
-                              arguments: JSON.stringify(possibleCall.parameters || possibleCall.args || {})
+                              name:      callName,
+                              arguments: JSON.stringify(possibleCall.parameters || possibleCall.args || possibleCall.input || {})
                           }
                       }];
-                      llmResponse.content = null; // Limpiamos el texto alucinante
-                      console.log(`[AGENT] Alucinación reparada: ${possibleCall.name}`);
+                      llmResponse.content = null;
                   }
               }
-          } catch (e) { console.warn("[AGENT] No se pudo reparar la alucinación de JSON."); }
+          } catch { /* JSON inválido, ignorar */ }
       }
     } catch (err) {
       throw new Error(`LLM no disponible: ${(err as Error).message}`);
@@ -226,6 +226,16 @@ export async function runAgent(
       const consecutiveTool = detectConsecutiveLoop(toolHistory);
       if (consecutiveTool) {
         console.warn(`[AGENT] Bucle consecutivo: ${consecutiveTool}`);
+        loopBreaks++;
+        if (loopBreaks >= 3) {
+          return {
+            response:   "No pude completar la tarea: entré en un bucle al usar la herramienta. Intenta reformular tu solicitud con más detalle.",
+            iterations,
+            usedTools:  [...new Set(usedTools)],
+            provider:   lastProvider,
+            warning:    "Loop persistente detectado",
+          };
+        }
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
@@ -239,6 +249,16 @@ export async function runAgent(
       // Loop: alternating
       if (detectAlternatingLoop(toolHistory)) {
         console.warn("[AGENT] Bucle alternado detectado (ABAB)");
+        loopBreaks++;
+        if (loopBreaks >= 3) {
+          return {
+            response:   "No pude completar la tarea: entré en un bucle alternado. Intenta reformular tu solicitud con más detalle.",
+            iterations,
+            usedTools:  [...new Set(usedTools)],
+            provider:   lastProvider,
+            warning:    "Loop alternado persistente",
+          };
+        }
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
