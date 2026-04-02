@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "deploy": "npm run build && ./scripts/deploy.sh",
+    "restart": "./scripts/restart.sh",
+    "setup-server": "./scripts/setup-server.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.81.0",

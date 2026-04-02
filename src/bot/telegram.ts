@@ -2,6 +2,11 @@ import { Bot, Context, session, SessionFlavor } from "grammy";
 import { runAgent }       from "../agent";
 import { tools as toolRegistry, listTools, SYSTEM_PROMPT } from "../tools/index.js";
 import { memoryService } from "../memory/service.js";
+import {
+  isWizardTrigger, isWizardCancel, getWizardState, startWizard,
+  getStepMessage, parseStepAnswer, advanceStep, generateWizardLanding,
+  clearWizard, buildWizardStatus, WIZARD_MAP,
+} from "./landing_wizard.js";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -10,8 +15,15 @@ interface PendingAction {
   message: string;
 }
 
+interface WizardSession {
+  step: number;
+  data: Record<string, string>;
+  startedAt: number;
+}
+
 interface SessionData {
   pendingAction?: PendingAction;
+  wizard?: WizardSession;
 }
 
 type BotCtx = Context & SessionFlavor<SessionData>;
@@ -115,7 +127,8 @@ export function createTelegramBot(): Bot<BotCtx> {
         `/olvida     — Eliminar un hecho (ej: /olvida trabajo en Google)\n` +
         `/estado     — Estado del sistema\n` +
         `/confirmar  — Confirmar acción pendiente\n` +
-        `/cancelar   — Cancelar acción pendiente`,
+        `/cancelar   — Cancelar acción pendiente\n\n` +
+        `💡 También puedes decir "crea una landing" para iniciar el wizard interactivo.`,
       { parse_mode: "Markdown" }
     );
   });
@@ -227,14 +240,16 @@ export function createTelegramBot(): Bot<BotCtx> {
 
   // ── /cancelar ─────────────────────────────────────────────────────────────
   bot.command("cancelar", async (ctx) => {
-    if (ctx.session.pendingAction) {
-      const { label } = ctx.session.pendingAction;
-      ctx.session.pendingAction = undefined;
-      await ctx.reply(`✅ Acción cancelada: _${label}_`, {
-        parse_mode: "Markdown",
-      });
+    if (!ctx.from) { await ctx.reply("⚠️ No pude identificar tu usuario."); return; }
+    const chatId = String(ctx.from.id);
+    ctx.session.pendingAction = undefined;
+    if (ctx.session.wizard) {
+      clearWizard(chatId);
+      ctx.session.wizard = undefined;
+      await ctx.reply("✅ Wizard de landing cancelado.", { parse_mode: "Markdown" });
     } else {
-      await ctx.reply("❓ No hay ninguna acción pendiente.");
+      ctx.session.pendingAction = undefined;
+      await ctx.reply("✅ No había acción pendiente.", { parse_mode: "Markdown" });
     }
   });
 
@@ -242,9 +257,69 @@ export function createTelegramBot(): Bot<BotCtx> {
   bot.on("message:text", async (ctx) => {
     const text   = ctx.message.text;
     const userId = ctx.from.id;
+    const chatId = String(userId);
+
+    // ─── Wizard: Sync from session ──────────────────────────────────────────
+    if (ctx.session.wizard) {
+      const existing = WIZARD_MAP.get(chatId);
+      if (!existing || existing.startedAt !== ctx.session.wizard.startedAt) {
+        WIZARD_MAP.set(chatId, {
+          step: ctx.session.wizard.step,
+          channel: "telegram",
+          data: ctx.session.wizard.data,
+          startedAt: ctx.session.wizard.startedAt,
+        });
+      }
+    }
+
+    // ─── Wizard Flow ────────────────────────────────────────────────────────
+    const wizard = getWizardState(chatId);
+    if (wizard) {
+      if (isWizardCancel(text)) {
+        clearWizard(chatId);
+        ctx.session.wizard = undefined;
+        await ctx.reply("✅ Wizard cancelado. Puedo ayudarte con otra cosa.", { parse_mode: "Markdown" });
+        return;
+      }
+
+      const parsed = parseStepAnswer(wizard, text);
+      if (!parsed.updated) {
+        await ctx.reply(`❌ ${parsed.error}\n\n${getStepMessage(wizard)}`, { parse_mode: "Markdown" });
+        return;
+      }
+
+      advanceStep(wizard);
+      ctx.session.wizard = { step: wizard.step, data: wizard.data as Record<string, string>, startedAt: wizard.startedAt };
+
+      if (wizard.step >= 7) {
+        await ctx.reply("🎉 ¡Generando tu landing page!");
+        const result = await generateWizardLanding(wizard);
+        await sendLong(ctx, result);
+        clearWizard(chatId);
+        ctx.session.wizard = undefined;
+        return;
+      }
+
+      await ctx.reply(getStepMessage(wizard), { parse_mode: "Markdown" });
+      return;
+    }
+
+    // ─── Wizard Trigger ──────────────────────────────────────────────────────
+    if (isWizardTrigger(text)) {
+      const state = startWizard("telegram", chatId);
+      ctx.session.wizard = { step: 0, data: {}, startedAt: state.startedAt };
+      await ctx.reply(
+        "🚀 *Vamos a crear tu landing page!*\n\n" +
+        "Te voy a hacer 7 preguntas rápidas.\n\n" +
+        getStepMessage(state),
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    // ─── Normal Agent Flow ───────────────────────────────────────────────────
     const tools  = Object.values(toolRegistry);
 
-    // Guardar mensaje del usuario
     memoryService.addMessage(userId, "user", text, "telegram");
 
     const processingMsg = await ctx.reply("⏳ Procesando...");
@@ -258,7 +333,6 @@ export function createTelegramBot(): Bot<BotCtx> {
 
       await tryDelete(ctx, processingMsg.message_id);
 
-      // Guardar respuesta del asistente
       memoryService.addMessage(userId, "assistant", result.response, "telegram");
 
       const response = result.warning
