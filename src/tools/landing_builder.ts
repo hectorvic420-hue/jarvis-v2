@@ -1,6 +1,6 @@
 // src/tools/landing_builder.ts
 import { Tool } from "../shared/types.js";
-import { LANDING_EXPERT_PROMPT, LANDING_STYLES, AUTO_STYLE_RULES } from "./landing_prompts.js";
+import { buildExpertPrompt, LANDING_STYLES, AUTO_STYLE_RULES } from "./landing_prompts.js";
 import Anthropic from "@anthropic-ai/sdk";
 import db from "../memory/db.js";
 import fs from "fs";
@@ -70,7 +70,14 @@ Genera el HTML completo ahora.
     messages: [
       { role: "user", content: userPrompt },
     ],
-    system: LANDING_EXPERT_PROMPT,
+    system: buildExpertPrompt({
+      checkout_url:    params.checkout_url,
+      style:           params.style,
+      pixel_id:        params.pixel_id,
+      ga_id:           params.ga_id,
+      video_url:       params.video_url,
+      countdown_hours: params.countdown_hours,
+    }),
   });
 
   const text = response.content

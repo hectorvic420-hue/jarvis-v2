@@ -9,19 +9,20 @@ import {
   isWhitelisted,
   sendText,
   sendTyping,
-  sendAudio,
   markAsRead,
   downloadMedia,
   WaMessage,
-} from "../tools/whatsapp";
+} from "../tools/whatsapp.js";
 import { transcribeBuffer } from "../tools/voice";
-import { textToSpeech }     from "../tools/voice";
 
 import { runAgent } from "../agent.js";
 import { tools as toolRegistry, SYSTEM_PROMPT } from "../tools/index.js";
 import { memoryService } from "../memory/service.js";
-
-const systemPrompt = SYSTEM_PROMPT;
+import {
+  isWizardTrigger, isWizardCancel, isWizardInterrupt, getWizardState,
+  startWizard, getStepMessage, parseStepAnswer, advanceStep,
+  generateWizardLanding, clearWizard, buildWizardStatus,
+} from "./landing_wizard.js";
 
 const router = Router();
 
@@ -33,9 +34,6 @@ router.post("/", async (req: Request, res: Response) => {
   try {
     const msg = parseWebhookPayload(req.body);
     if (!msg) return;
-
-    // Ignore own messages
-    if (req.body?.data?.key?.fromMe === true) return;
 
     // Whitelist gate
     if (!isWhitelisted(msg.from_number)) {
@@ -74,6 +72,45 @@ async function processMessage(msg: WaMessage): Promise<void> {
   }
 
   if (!userInput.trim()) return;
+
+  const userId = msg.from_number;
+
+  // ─── Wizard Flow ──────────────────────────────────────────────────────────
+  const wizard = getWizardState(userId);
+  if (wizard) {
+    // Cancelar wizard
+    if (isWizardCancel(userInput)) {
+      clearWizard(userId);
+      await sendText(msg.from, "✅ Wizard cancelado. Puedo ayudarte con otra cosa.");
+      return;
+    }
+
+    // Interrupción: usuario manda algo que no es respuesta al paso actual
+    if (isWizardInterrupt(userInput) && !wizardInProgress(wizard, userInput)) {
+      const status = buildWizardStatus(wizard);
+      await sendText(msg.from,
+        `💬 Estás en medio del wizard de landing.\n\n${status}\n\n` +
+        `¿Seguimos con tu landing o prefieres otra cosa?\n` +
+        `• Escribe *cancelar* para salir del wizard\n` +
+        `• O responde la pregunta de arriba`
+      );
+      return;
+    }
+
+    await handleWizard(wizard, userInput, msg.from);
+    return;
+  }
+
+  // ─── Wizard Trigger ───────────────────────────────────────────────────────
+  if (isWizardTrigger(userInput)) {
+    const state = startWizard("whatsapp", userId);
+    await sendText(msg.from,
+      "🚀 *Vamos a crear tu landing page!*\n\n" +
+      "Te voy a hacer 7 preguntas rápidas.\n\n" +
+      getStepMessage(state)
+    );
+    return;
+  }
 
   // ─── Command handling (parity with Telegrambot) ───────────────────────────
   const cmd = userInput.trim().toLowerCase();
@@ -132,19 +169,19 @@ async function processMessage(msg: WaMessage): Promise<void> {
   // ─── Agent Processing ─────────────────────────────────────────────────────
   try {
     const tools = Object.values(toolRegistry);
-    const userId = parseInt(msg.from_number.replace(/\D/g, "")) || 0;
+    const uid = parseInt(userId.replace(/\D/g, "")) || 0;
 
     // Guardar mensaje en DB
-    memoryService.addMessage(userId, "user", userInput, "whatsapp");
+    memoryService.addMessage(uid, "user", userInput, "whatsapp");
 
     const agentResult = await runAgent(userInput, { 
       tools, 
       systemPrompt: SYSTEM_PROMPT, 
-      userId
+      userId: uid
     });
     
     // Guardar respuesta en DB
-    memoryService.addMessage(userId, "assistant", agentResult.response, "whatsapp");
+    memoryService.addMessage(uid, "assistant", agentResult.response, "whatsapp");
 
     // Add warning if exists (e.g. Gemini fallback warning)
     const replyText = agentResult.warning 
@@ -163,6 +200,35 @@ async function processMessage(msg: WaMessage): Promise<void> {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+function wizardInProgress(wizard: import("./landing_wizard.js").LandingWizardState, answer: string): boolean {
+  const result = parseStepAnswer(wizard, answer);
+  return result.updated;
+}
+
+async function handleWizard(
+  wizard: import("./landing_wizard.js").LandingWizardState,
+  answer: string,
+  chatId: string
+): Promise<void> {
+  const parsed = parseStepAnswer(wizard, answer);
+
+  if (!parsed.updated) {
+    await sendText(chatId, `❌ ${parsed.error}\n\n${getStepMessage(wizard)}`);
+    return;
+  }
+
+  advanceStep(wizard);
+
+  if (wizard.step >= 7) {
+    await sendText(chatId, "🎉 ¡Generando tu landing page!");
+    const result = await generateWizardLanding(wizard);
+    await sendText(chatId, result);
+    return;
+  }
+
+  await sendText(chatId, getStepMessage(wizard));
+}
+
 function splitMessage(text: string, maxLen: number): string[] {
   if (text.length <= maxLen) return [text];
   const chunks: string[] = [];
