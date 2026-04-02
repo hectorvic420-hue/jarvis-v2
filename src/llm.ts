@@ -6,12 +6,18 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface ImageBlock {
+  media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+  data: string; // base64
+}
+
 export interface LLMMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
   name?: string;
   tool_call_id?: string;
   tool_calls?: ToolCall[];
+  imageBlocks?: ImageBlock[];
 }
 
 export interface ToolCall {
@@ -96,6 +102,20 @@ async function callClaude(
         });
       }
       return { role: "assistant" as const, content };
+    }
+    if (m.role === "user" && m.imageBlocks?.length) {
+      const content: Anthropic.MessageParam["content"] = [
+        ...m.imageBlocks.map((img) => ({
+          type: "image" as const,
+          source: {
+            type: "base64" as const,
+            media_type: img.media_type,
+            data: img.data,
+          },
+        })),
+        { type: "text" as const, text: m.content ?? "" },
+      ];
+      return { role: "user" as const, content };
     }
     return {
       role: m.role as "user" | "assistant",
