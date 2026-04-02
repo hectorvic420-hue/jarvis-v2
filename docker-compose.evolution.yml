@@ -22,6 +22,10 @@ services:
       DATABASE_PROVIDER: postgresql
       DATABASE_URL: postgresql://evolution:evolution123@postgres-evolution:5432/evolution
       AUTHENTICATION_API_KEY: Jarvis_WA_Key_2026
+      QRCODE_LIMIT: "30"
+      QRCODE_EXPIRATION_TIME: "45"
+      CONFIG_SESSION_PHONE_CLIENT: Jarvis
+      CONFIG_SESSION_PHONE_NAME: Chrome
     depends_on:
       - postgres-evolution
     restart: unless-stopped
