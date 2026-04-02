@@ -11,10 +11,41 @@ const SHEETS_BASE   = "https://sheets.googleapis.com/v4";
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
-function token(): string {
-  const t = process.env.GOOGLE_ACCESS_TOKEN;
-  if (!t) throw new Error("GOOGLE_ACCESS_TOKEN no configurado");
-  return t;
+let cachedToken: { value: string; expiresAt: number } | null = null;
+
+async function token(): Promise<string> {
+  if (cachedToken && Date.now() < cachedToken.expiresAt - 60_000) {
+    return cachedToken.value;
+  }
+
+  const clientId     = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error("Faltan GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET o GOOGLE_REFRESH_TOKEN");
+  }
+
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id:     clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type:    "refresh_token",
+    }),
+  });
+
+  const data = await res.json() as Record<string, unknown>;
+  if (!res.ok) throw new Error((data["error_description"] as string) || `Google OAuth ${res.status}`);
+
+  cachedToken = {
+    value:     data["access_token"] as string,
+    expiresAt: Date.now() + (data["expires_in"] as number) * 1000,
+  };
+
+  return cachedToken.value;
 }
 
 async function gGet(url: string, params: Record<string, string> = {}): Promise<ApiResponse> {
@@ -22,7 +53,7 @@ async function gGet(url: string, params: Record<string, string> = {}): Promise<A
     ? "?" + new URLSearchParams(params).toString()
     : "";
   const res = await fetch(`${url}${qs}`, {
-    headers: { Authorization: `Bearer ${token()}` },
+    headers: { Authorization: `Bearer ${await token()}` },
   });
   const data = await res.json() as ApiResponse;
   if (!res.ok) throw new Error(data["error"]?.["message"] as string || `Google API ${res.status}`);
@@ -32,7 +63,7 @@ async function gGet(url: string, params: Record<string, string> = {}): Promise<A
 async function gPost(url: string, body: unknown): Promise<ApiResponse> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const data = await res.json() as ApiResponse;
@@ -43,7 +74,7 @@ async function gPost(url: string, body: unknown): Promise<ApiResponse> {
 async function gPatch(url: string, body: unknown): Promise<ApiResponse> {
   const res = await fetch(url, {
     method: "PATCH",
-    headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const data = await res.json() as ApiResponse;
