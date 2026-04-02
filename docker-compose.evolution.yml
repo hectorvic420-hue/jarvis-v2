@@ -34,6 +34,8 @@ services:
       CONFIG_SESSION_PHONE_VERSION: 2.3000.1023141471
       CACHE_REDIS_ENABLED: "false"
       CACHE_LOCAL_ENABLED: "true"
+      LOG_LEVEL: ERROR,WARN,DEBUG,INFO,LOG,VERBOSE,DARK,WEBHOOKS
+      LOG_BAILEYS: debug
     depends_on:
       postgres-evolution:
         condition: service_healthy
