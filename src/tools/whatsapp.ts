@@ -13,6 +13,7 @@ export interface WaMessage {
   type: "text" | "audio" | "image" | "document" | "video" | "sticker" | "unknown";
   timestamp:   number;
   is_group:    boolean;
+  caption?:    string;
 }
 
 // ─── HTTP Helper ──────────────────────────────────────────────────────────────
@@ -166,8 +167,10 @@ export function parseWebhookPayload(body: any): WaMessage | null {
       type = "audio";
     } else if (msg.type === "image") {
       type = "image";
+      text = (msg.image?.caption as string | undefined) ?? "";
     } else if (msg.type === "document") {
       type = "document";
+      text = (msg.document?.caption as string | undefined) ?? "";
     } else if (msg.type === "video") {
       type = "video";
     } else if (msg.type === "sticker") {
