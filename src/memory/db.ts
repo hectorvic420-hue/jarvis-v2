@@ -58,6 +58,20 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);
   CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
+
+  CREATE TABLE IF NOT EXISTS landings (
+    slug         TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    style        TEXT NOT NULL DEFAULT 'futuristic',
+    checkout_url TEXT,
+    pixel_id     TEXT,
+    ga_id        TEXT,
+    html_path    TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    views        INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_landings_created ON landings(created_at);
 `);
 
 export default db;
