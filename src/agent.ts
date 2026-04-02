@@ -1,13 +1,15 @@
-import { callLLM, LLMMessage, LLMTool, LLMResponse } from "./llm.js";
+import { callLLM, LLMMessage, LLMTool, LLMResponse, ImageBlock } from "./llm.js";
 import { Tool } from "./shared/types.js";
 import { memoryService } from "./memory/service.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface AgentOptions {
-  tools:        Tool[];
-  systemPrompt: string;
-  userId:       string | number;
+  tools:          Tool[];
+  systemPrompt:   string;
+  userId:         string | number;
+  imageBlocks?:   ImageBlock[];
+  extractedText?: string;
 }
 
 export interface AgentResult {
@@ -137,7 +139,18 @@ export async function runAgent(
   });
 
   // Agregar mensaje actual del usuario
-  messages.push({ role: "user", content: userMessage });
+  let finalUserMessage = userMessage;
+  if (options.extractedText) {
+    finalUserMessage =
+      `[Contenido extraído del archivo:]\n${options.extractedText}\n\n` +
+      `Mensaje del usuario: ${userMessage}`;
+  }
+
+  const userMsg: LLMMessage = { role: "user", content: finalUserMessage };
+  if (options.imageBlocks?.length) {
+    userMsg.imageBlocks = options.imageBlocks;
+  }
+  messages.push(userMsg);
 
   // ── State ────────────────────────────────────────────────────────────────
   const usedTools:   string[] = [];
