@@ -7,6 +7,7 @@ import {
   getStepMessage, parseStepAnswer, advanceStep, generateWizardLanding,
   clearWizard, buildWizardStatus, WIZARD_MAP,
 } from "./landing_wizard.js";
+import { processMediaBuffer } from "./media_processor.js";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -348,10 +349,92 @@ export function createTelegramBot(): Bot<BotCtx> {
     }
   });
 
-  // ── Otros mensajes (fotos, docs, stickers…) ───────────────────────────────
+  // ── Fotos ─────────────────────────────────────────────────────────────────
+  bot.on("message:photo", async (ctx) => {
+    const userId  = ctx.from.id;
+    const photo   = ctx.message.photo.at(-1)!;
+    const caption = ctx.message.caption ?? "Describe esta imagen en detalle";
+
+    const processingMsg = await ctx.reply("⏳ Analizando imagen...");
+    try {
+      const fileInfo = await ctx.api.getFile(photo.file_id);
+      const url      = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
+      const res      = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buffer   = Buffer.from(await res.arrayBuffer());
+
+      const media = await processMediaBuffer(buffer, "photo.jpg");
+      if (media.error) {
+        await tryDelete(ctx, processingMsg.message_id);
+        await ctx.reply(media.error);
+        return;
+      }
+
+      const tools = Object.values(toolRegistry);
+      memoryService.addMessage(userId, "user", `[imagen] ${caption}`, "telegram");
+
+      const result = await runAgent(caption, {
+        tools,
+        systemPrompt: SYSTEM_PROMPT,
+        userId,
+        imageBlocks: media.imageBlock ? [media.imageBlock] : undefined,
+      });
+
+      await tryDelete(ctx, processingMsg.message_id);
+      memoryService.addMessage(userId, "assistant", result.response, "telegram");
+      await sendLong(ctx, result.response);
+    } catch (err) {
+      await tryDelete(ctx, processingMsg.message_id);
+      await ctx.reply(`❌ Error analizando imagen: ${(err as Error).message}`);
+    }
+  });
+
+  // ── Documentos ───────────────────────────────────────────────────────────
+  bot.on("message:document", async (ctx) => {
+    const userId   = ctx.from.id;
+    const doc      = ctx.message.document;
+    const caption  = ctx.message.caption ?? "Analiza este documento y explica su contenido";
+    const filename = doc.file_name ?? "documento.bin";
+
+    const processingMsg = await ctx.reply("⏳ Leyendo documento...");
+    try {
+      const fileInfo = await ctx.api.getFile(doc.file_id);
+      const url      = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
+      const res      = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buffer   = Buffer.from(await res.arrayBuffer());
+
+      const media = await processMediaBuffer(buffer, filename);
+      if (media.error) {
+        await tryDelete(ctx, processingMsg.message_id);
+        await ctx.reply(media.error);
+        return;
+      }
+
+      const tools = Object.values(toolRegistry);
+      memoryService.addMessage(userId, "user", `[doc: ${filename}] ${caption}`, "telegram");
+
+      const result = await runAgent(caption, {
+        tools,
+        systemPrompt: SYSTEM_PROMPT,
+        userId,
+        imageBlocks:   media.imageBlock   ? [media.imageBlock]   : undefined,
+        extractedText: media.extractedText,
+      });
+
+      await tryDelete(ctx, processingMsg.message_id);
+      memoryService.addMessage(userId, "assistant", result.response, "telegram");
+      await sendLong(ctx, result.response);
+    } catch (err) {
+      await tryDelete(ctx, processingMsg.message_id);
+      await ctx.reply(`❌ Error leyendo documento: ${(err as Error).message}`);
+    }
+  });
+
+  // ── Otros mensajes (videos, stickers, audio sin voz…) ────────────────────
   bot.on("message", async (ctx) => {
     await ctx.reply(
-      "📎 Por ahora solo proceso texto. Envíame tu consulta en texto."
+      "❌ No puedo procesar ese tipo de archivo. Envíame texto, fotos, PDFs, Word (.docx) o Excel (.xlsx)."
     );
   });
 
