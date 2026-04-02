@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres-evolution:
     image: postgres:16
@@ -12,6 +10,11 @@ services:
     volumes:
       - postgres-evolution-data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution -d evolution"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   evolution-api:
     image: atendai/evolution-api:latest
@@ -28,7 +31,8 @@ services:
       CONFIG_SESSION_PHONE_CLIENT: Jarvis
       CONFIG_SESSION_PHONE_NAME: Chrome
     depends_on:
-      - postgres-evolution
+      postgres-evolution:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
