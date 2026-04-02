@@ -14,6 +14,7 @@ import {
   WaMessage,
 } from "../tools/whatsapp.js";
 import { transcribeBuffer } from "../tools/voice";
+import { processMediaBuffer, mimeTypeToExt } from "./media_processor.js";
 
 import { runAgent } from "../agent.js";
 import { tools as toolRegistry, SYSTEM_PROMPT } from "../tools/index.js";
@@ -71,9 +72,65 @@ async function processMessage(msg: WaMessage): Promise<void> {
     }
   }
 
-  if (!userInput.trim()) return;
-
   const userId = msg.from_number;
+
+  // ── Image ────────────────────────────────────────────────────────────────
+  if (msg.type === "image") {
+    const mediaData = await downloadMedia(msg.message_id, msg.from);
+    if (!mediaData) {
+      await sendText(msg.from, "❌ No pude descargar la imagen. Intenta de nuevo.");
+      return;
+    }
+    const mediaResult = await processMediaBuffer(mediaData.buffer, "photo.jpg");
+    if (mediaResult.error) {
+      await sendText(msg.from, mediaResult.error);
+      return;
+    }
+    const caption = userInput || "Describe esta imagen en detalle";
+    const uid = parseInt(userId.replace(/\D/g, ""), 10) || 0;
+    memoryService.addMessage(uid, "user", `[imagen] ${caption}`, "whatsapp");
+    const agentResult = await runAgent(caption, {
+      tools: Object.values(toolRegistry),
+      systemPrompt: SYSTEM_PROMPT,
+      userId: uid,
+      imageBlocks: mediaResult.imageBlock ? [mediaResult.imageBlock] : undefined,
+    });
+    memoryService.addMessage(uid, "assistant", agentResult.response, "whatsapp");
+    const imgChunks = splitMessage(agentResult.response, 4000);
+    for (const chunk of imgChunks) await sendText(msg.from, chunk);
+    return;
+  }
+
+  // ── Document ─────────────────────────────────────────────────────────────
+  if (msg.type === "document") {
+    const mediaData = await downloadMedia(msg.message_id, msg.from);
+    if (!mediaData) {
+      await sendText(msg.from, "❌ No pude descargar el documento. Intenta de nuevo.");
+      return;
+    }
+    const ext = mimeTypeToExt(mediaData.mimetype);
+    const mediaResult = await processMediaBuffer(mediaData.buffer, `documento.${ext}`);
+    if (mediaResult.error) {
+      await sendText(msg.from, mediaResult.error);
+      return;
+    }
+    const caption = userInput || "Analiza este documento y explica su contenido";
+    const uid = parseInt(userId.replace(/\D/g, ""), 10) || 0;
+    memoryService.addMessage(uid, "user", `[documento] ${caption}`, "whatsapp");
+    const agentResult = await runAgent(caption, {
+      tools: Object.values(toolRegistry),
+      systemPrompt: SYSTEM_PROMPT,
+      userId: uid,
+      imageBlocks:   mediaResult.imageBlock   ? [mediaResult.imageBlock]   : undefined,
+      extractedText: mediaResult.extractedText,
+    });
+    memoryService.addMessage(uid, "assistant", agentResult.response, "whatsapp");
+    const docChunks = splitMessage(agentResult.response, 4000);
+    for (const chunk of docChunks) await sendText(msg.from, chunk);
+    return;
+  }
+
+  if (!userInput.trim() && msg.type === "text") return;
 
   // ─── Wizard Flow ──────────────────────────────────────────────────────────
   const wizard = getWizardState(userId);
