@@ -12,6 +12,11 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const LANDINGS_DIR = process.env.LANDINGS_DIR || path.join(process.cwd(), "landings");
 const PUBLIC_URL   = (process.env.PUBLIC_URL || "http://localhost:8080").replace(/\/$/, "");
 
+function extractText(content: Anthropic.Messages.ContentBlock[]): string | null {
+  const block = content.find(b => b.type === "text");
+  return block && block.type === "text" ? block.text : null;
+}
+
 function ensureLandingsDir(): void {
   if (!fs.existsSync(LANDINGS_DIR)) fs.mkdirSync(LANDINGS_DIR, { recursive: true });
 }
@@ -101,7 +106,7 @@ async function createLanding(params: Record<string, any>): Promise<string> {
       max_tokens: 50,
       messages: [{ role: "user", content: `Basado en este producto: "${prompt}"\n\n${AUTO_STYLE_RULES}\n\nResponde SOLO con el ID del estilo (futuristic, premium, energetic, corporate, natural o bold):` }],
     });
-    const chosen = (styleResponse.content[0] as any).text?.trim().toLowerCase() ?? "futuristic";
+    const chosen = extractText(styleResponse.content)?.trim().toLowerCase() ?? "futuristic";
     style = Object.keys(LANDING_STYLES).includes(chosen) ? chosen : "futuristic";
   }
 
@@ -113,7 +118,7 @@ async function createLanding(params: Record<string, any>): Promise<string> {
     max_tokens: 30,
     messages: [{ role: "user", content: `Extrae el nombre del curso/producto de este texto en máximo 5 palabras: "${prompt}". Responde solo el nombre, sin puntuación.` }],
   });
-  const title = (titleResponse.content[0] as any).text?.trim() ?? "landing";
+  const title = extractText(titleResponse.content)?.trim() ?? "landing";
 
   const slug     = generateSlug(title);
   const htmlPath = path.join(LANDINGS_DIR, `${slug}.html`);
@@ -131,11 +136,15 @@ async function createLanding(params: Record<string, any>): Promise<string> {
 
   fs.writeFileSync(htmlPath, html, "utf-8");
 
-  // Guardar en SQLite
-  db.prepare(`
-    INSERT INTO landings (slug, title, style, checkout_url, pixel_id, ga_id, html_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(slug, title, style, checkout_url || null, pixel_id || null, ga_id || null, htmlPath);
+  try {
+    db.prepare(`
+      INSERT INTO landings (slug, title, style, checkout_url, pixel_id, ga_id, html_path)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(slug, title, style, checkout_url || null, pixel_id || null, ga_id || null, htmlPath);
+  } catch (dbErr) {
+    try { fs.unlinkSync(htmlPath); } catch { /* ignore cleanup error */ }
+    throw dbErr;
+  }
 
   const url = `${PUBLIC_URL}/l/${slug}`;
 
