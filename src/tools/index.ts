@@ -10,6 +10,7 @@ import { voiceTool }             from "./voice.js";
 import { binanceTool }           from "./binance.js";
 import { webResearcherTool }     from "./web_researcher.js";
 import { whatsappTool }          from "./whatsapp.js";
+import { landingBuilderTool }    from "./landing_builder.js";
 // developerTool (self_healing_architect) desactivado — escribe archivos corruptos en producción
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ export const tools: Record<string, Tool> = {
   [webResearcherTool.name]:     webResearcherTool,
   [whatsappTool.name]:          whatsappTool,
   [heartbeatTool.name]:         heartbeatTool,
+  [landingBuilderTool.name]:    landingBuilderTool,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -86,7 +88,8 @@ export const SYSTEM_PROMPT =
   `- Para campañas de Meta Ads (crear, pausar, activar, presupuesto): USA SIEMPRE 'meta_ads'.\n` +
   `- Para enviar mensajes de WhatsApp: USA SIEMPRE 'whatsapp_manager'.\n` +
   `- 'web_researcher' SOLO se usa cuando el usuario pide buscar información externa en internet, NUNCA para consultar sistemas internos.\n` +
-  `- Cuando el usuario pide "listado", "estado", "estatus" de cualquier sistema interno, consulta la herramienta correspondiente directamente.`;
+  `- Cuando el usuario pide "listado", "estado", "estatus" de cualquier sistema interno, consulta la herramienta correspondiente directamente.\n` +
+  `- Para crear, listar o eliminar landing pages de ventas: USA SIEMPRE 'landing_builder'. Cuando el usuario diga "hazme una landing", "crea una página de ventas", "necesito un funnel", "quiero una landing page", usa landing_builder con action='create_landing'.\n`;
 
 export const systemPrompt = SYSTEM_PROMPT;
 

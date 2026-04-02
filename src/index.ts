@@ -4,6 +4,7 @@ import "./memory/db"; // inicializa DB antes que todo
 import express from "express";
 import { createTelegramBot } from "./bot/telegram.js";
 import whatsappRouter from "./bot/whatsapp.route.js";
+import landingsRouter from "./routes/landings.route.js";
 
 const app = (express as any)();
 
@@ -13,6 +14,8 @@ app.use((express as any).urlencoded({ extended: true }));
 
 // Rutas
 app.use("/webhook/whatsapp", whatsappRouter);
+app.use("/l", landingsRouter);         // sirve /l/:slug
+app.use("/", landingsRouter);          // sirve /api/landings y /api/landing-generate
 
 // Start Server
 const PORT = process.env.PORT || 8080;
