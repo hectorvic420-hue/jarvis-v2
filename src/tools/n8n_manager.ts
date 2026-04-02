@@ -122,6 +122,9 @@ async function createWorkflow(
   nodes: unknown[] = [],
   connections: unknown = {}
 ): Promise<string> {
+  if (!nodes || nodes.length === 0) {
+    throw new Error("No se pueden crear workflows vacíos. Incluye al menos un nodo.");
+  }
   const payload = {
     name,
     nodes,
@@ -130,10 +133,34 @@ async function createWorkflow(
     staticData: {},
   };
 
-  console.log(`[N8N] Payload de creación para "${name}":`, JSON.stringify(payload));
+  console.log(`[N8N] Payload de creación para "${name}":`, JSON.stringify(payload, null, 2));
 
   const w = await n8nPost("/workflows", payload);
-  return `✅ Workflow creado | ID: ${w.id} | Nodos: ${nodes.length}`;
+
+  // Verificar nodos reales guardados por n8n (no confiar en el array enviado)
+  const created = await n8nGet(`/workflows/${w.id}`);
+  const realNodes: any[] = created.nodes || [];
+  const realConnections = Object.keys(created.connections || {}).length;
+
+  if (realNodes.length === 0 && nodes.length > 0) {
+    return (
+      `⚠️ Workflow creado pero SIN nodos reales en n8n.\n` +
+      `ID: ${w.id}\n` +
+      `Nodos enviados: ${nodes.length} — pero n8n los rechazó (formato incorrecto).\n\n` +
+      `Formato requerido por nodo:\n` +
+      `{\n  "id": "uuid-único",\n  "name": "Nombre del nodo",\n  "type": "n8n-nodes-base.webhook",\n` +
+      `  "typeVersion": 1,\n  "position": [240, 300],\n  "parameters": {}\n}\n\n` +
+      `Usa action=update con workflow_id=${w.id} y nodes=[...nodos correctos] para agregar los nodos.`
+    );
+  }
+
+  const nodeNames = realNodes.map((n: any) => n.name).join(", ") || "ninguno";
+  return (
+    `✅ Workflow creado y verificado\n` +
+    `ID: ${w.id}\n` +
+    `Nodos reales en n8n: ${realNodes.length} (${nodeNames})\n` +
+    `Conexiones: ${realConnections}`
+  );
 }
 
 async function updateWorkflow(
@@ -145,7 +172,59 @@ async function updateWorkflow(
     ...current,
     ...updates,
   });
-  return `✅ Workflow actualizado\nID: ${updated.id}\nNombre: ${updated.name}`;
+
+  // Verificar nodos reales post-actualización
+  const verified = await n8nGet(`/workflows/${workflowId}`);
+  const realNodes: any[] = verified.nodes || [];
+  const nodeNames = realNodes.map((n: any) => n.name).join(", ") || "ninguno";
+
+  const sentNodes = Array.isArray(updates.nodes) ? (updates.nodes as unknown[]).length : "N/A";
+  const realCount = realNodes.length;
+
+  if (typeof sentNodes === "number" && sentNodes > 0 && realCount === 0) {
+    return (
+      `⚠️ Workflow actualizado pero n8n tiene 0 nodos reales.\n` +
+      `ID: ${updated.id}\n` +
+      `Nodos enviados: ${sentNodes} — formato inválido rechazado por n8n.\n\n` +
+      `Cada nodo DEBE tener: id (uuid), name, type (ej: n8n-nodes-base.httpRequest), ` +
+      `typeVersion (número), position ([x,y]), parameters (objeto).`
+    );
+  }
+
+  return (
+    `✅ Workflow actualizado\n` +
+    `ID: ${updated.id}\n` +
+    `Nodos reales en n8n: ${realCount} (${nodeNames})`
+  );
+}
+
+async function verifyWorkflow(workflowId: string): Promise<string> {
+  const w = await n8nGet(`/workflows/${workflowId}`);
+  const nodes: any[] = w.nodes || [];
+  const connections = w.connections || {};
+
+  if (nodes.length === 0) {
+    return (
+      `🔴 Workflow ${workflowId} no tiene nodos.\n` +
+      `Nombre: ${w.name}\n` +
+      `Estado: ${w.active ? "activo" : "inactivo"}\n\n` +
+      `Para agregar nodos usa action=update con nodes=[...] en formato n8n correcto.`
+    );
+  }
+
+  const lines = [
+    `🔍 *Verificación Workflow: ${w.name}*`,
+    `ID: ${w.id}`,
+    `Estado: ${w.active ? "🟢 Activo" : "🔴 Inactivo"}`,
+    `Nodos reales (${nodes.length}):`,
+  ];
+
+  for (const n of nodes) {
+    const connectedTo = Object.keys(connections[n.name] || {}).join(", ") || "sin salida";
+    lines.push(`  • ${n.name} [${n.type}] → ${connectedTo}`);
+  }
+
+  return lines.join("\n");
 }
 
 async function activateWorkflow(workflowId: string): Promise<string> {
@@ -212,7 +291,29 @@ async function listExecutions(workflowId?: string, limit = 10): Promise<string> 
 export const n8nManagerTool: Tool = {
   name: "n8n_manager",
   description:
-    "Gestiona workflows de n8n: listar, obtener detalle, crear, actualizar, activar, desactivar, ejecutar, eliminar workflows y consultar historial de ejecuciones.",
+    "Gestiona workflows de n8n: listar, obtener detalle, crear, actualizar, activar, desactivar, ejecutar, eliminar workflows y consultar historial de ejecuciones.\n\n" +
+    "FORMATO OBLIGATORIO DE NODOS (cada nodo en el array nodes[]):\n" +
+    "{\n" +
+    '  "id": "uuid-único-por-nodo",\n' +
+    '  "name": "Nombre descriptivo",\n' +
+    '  "type": "n8n-nodes-base.TIPO",\n' +
+    '  "typeVersion": 1,\n' +
+    '  "position": [240, 300],\n' +
+    '  "parameters": { ...parámetros del nodo }\n' +
+    "}\n\n" +
+    "TIPOS DE NODOS COMUNES:\n" +
+    "- n8n-nodes-base.webhook (trigger HTTP)\n" +
+    "- n8n-nodes-base.httpRequest (llamadas HTTP/REST)\n" +
+    "- n8n-nodes-base.set (asignar variables)\n" +
+    "- n8n-nodes-base.if (condición si/no)\n" +
+    "- n8n-nodes-base.switch (múltiples rutas)\n" +
+    "- n8n-nodes-base.code (código JavaScript)\n" +
+    "- n8n-nodes-base.respondToWebhook (responder webhook)\n" +
+    "- n8n-nodes-base.scheduleTrigger (trigger por cron)\n" +
+    "- n8n-nodes-base.noOp (nodo vacío/placeholder)\n\n" +
+    "FORMATO DE CONEXIONES (connections):\n" +
+    '{ "NombreNodoOrigen": { "main": [[{ "node": "NombreNodoDestino", "type": "main", "index": 0 }]] } }\n\n' +
+    "IMPORTANTE: Después de crear/actualizar, usa action=verify para confirmar que n8n guardó los nodos correctamente.",
   parameters: {
     type: "object",
     properties: {
@@ -223,13 +324,14 @@ export const n8nManagerTool: Tool = {
           "get",
           "create",
           "update",
+          "verify",
           "activate",
           "deactivate",
           "execute",
           "delete",
           "executions",
         ],
-        description: "Acción a ejecutar",
+        description: "Acción a ejecutar. 'verify' inspecciona nodos reales de un workflow.",
       },
       workflow_id: {
         type: "string",
@@ -290,12 +392,19 @@ export const n8nManagerTool: Tool = {
 
       case "create":
         if (!name) return "❌ Falta parámetro: name";
+        if (!nodes || !Array.isArray(nodes) || nodes.length === 0) {
+          return "❌ No se pueden crear workflows sin nodos. Incluye el array 'nodes' con al menos un nodo.";
+        }
         return createWorkflow(name, nodes, connections);
 
       case "update":
         if (!workflow_id || !updates)
           return "❌ Faltan parámetros: workflow_id, updates";
         return updateWorkflow(workflow_id, updates);
+
+      case "verify":
+        if (!workflow_id) return "❌ Falta parámetro: workflow_id";
+        return verifyWorkflow(workflow_id);
 
       case "activate":
         if (!workflow_id) return "❌ Falta parámetro: workflow_id";

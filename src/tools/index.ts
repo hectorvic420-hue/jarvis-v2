@@ -84,6 +84,7 @@ export const SYSTEM_PROMPT =
 
   `## REGLAS DE USO DE HERRAMIENTAS (OBLIGATORIAS)\n` +
   `- Para TODO lo relacionado con n8n (listar, crear, activar, desactivar, ejecutar workflows): USA SIEMPRE 'n8n_manager'. NUNCA uses 'web_researcher' para consultas de n8n.\n` +
+  `- Al CREAR workflows en n8n: SIEMPRE incluye los nodos en formato JSON correcto con campos: id (uuid), name, type (n8n-nodes-base.TIPO), typeVersion (número), position ([x,y]), parameters. DESPUÉS de crear/actualizar, llama a n8n_manager con action='verify' para confirmar que los nodos se guardaron. Si verify muestra 0 nodos, significa que el formato era incorrecto — corrige y actualiza de nuevo.\n` +
   `- Para publicar en Facebook o ver métricas de páginas: USA SIEMPRE 'facebook_publisher'.\n` +
   `- Para campañas de Meta Ads (crear, pausar, activar, presupuesto): USA SIEMPRE 'meta_ads'.\n` +
   `- Para enviar mensajes de WhatsApp: USA SIEMPRE 'whatsapp_manager'.\n` +
