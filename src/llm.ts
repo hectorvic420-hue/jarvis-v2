@@ -48,10 +48,28 @@ export interface LLMResponse {
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const LLM_TIMEOUT_MS   = 120_000;
-const CLAUDE_MODEL     = "claude-sonnet-4-6";
-const GROQ_MODEL       = "llama-3.3-70b-versatile";
-const OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct";
-const GEMINI_MODEL     = "gemini-1.5-flash";
+
+// Modelos optimizados para tool calling (ordenados por confiabilidad)
+// Groq: modelos gratuitos con excelente tool calling
+const GROQ_MODELS = [
+  "qwen-2.5-72b-instruct",     // Mejor soporte tool calling en Groq
+  "deepseek-r1-distill-qwen-32b", // Reasoning + tool calling
+  "llama-3.3-70b-versatile",   // Fallback
+];
+
+// OpenRouter: modelos variados (requiere crédito o trial)
+const OPENROUTER_MODELS = [
+  "anthropic/claude-3.5-haiku",      // Rápido y barato
+  "google/gemini-2.0-flash-exp",    // Excelente tool calling
+  "deepseek/deepseek-chat-v3-0324", // Muy capaz
+  "meta-llama/llama-3.3-70b-instruct", // Fallback
+];
+
+// Claude: modelo principal (requiere crédito)
+const CLAUDE_MODEL = "claude-3-5-sonnet-20241022";
+
+// Gemini directo: API gratuita con límites
+const GEMINI_MODEL = "gemini-2.0-flash";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -65,6 +83,55 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
       )
     ),
   ]);
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000,
+  label: string = "Operation"
+): Promise<T> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err as Error;
+
+      const shouldRetry =
+        attempt < maxRetries &&
+        (
+          err?.message?.includes("429") ||
+          err?.message?.includes("429") ||
+          err?.message?.includes("rate_limit") ||
+          err?.message?.includes("timeout") ||
+          err?.message?.includes("ETIMEDOUT") ||
+          err?.message?.includes("ECONNRESET") ||
+          err?.message?.includes("network") ||
+          err?.message?.includes("service_unavailable") ||
+          err?.message?.includes("500") ||
+          err?.message?.includes("502") ||
+          err?.message?.includes("503") ||
+          err?.message?.includes("Tool use failed")
+        );
+
+      if (shouldRetry) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        console.log(`[LLM] ${label}: Intento ${attempt + 1} falló. Reintentando en ${delay}ms...`);
+        await sleep(delay);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastError || new Error(`${label} falló después de ${maxRetries} intentos`);
 }
 
 // ─── Providers ───────────────────────────────────────────────────────────────
@@ -138,9 +205,14 @@ async function callClaude(
     ...(anthropicTools?.length ? { tools: anthropicTools } : {}),
   };
 
-  const res = await withTimeout(
-    client.messages.create(params),
-    LLM_TIMEOUT_MS,
+  const res = await retryWithBackoff(
+    () => withTimeout(
+      client.messages.create(params),
+      LLM_TIMEOUT_MS,
+      "Claude"
+    ),
+    2,
+    1500,
     "Claude"
   );
 
@@ -173,35 +245,68 @@ async function callGroq(
 ): Promise<LLMResponse> {
   const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-  // groq-sdk 1.1.2: ChatCompletionCreateParamsNonStreaming no está re-exportado
-  // al namespace Groq.Chat — construimos el objeto directo con stream: false.
-  const params = {
-    model:       GROQ_MODEL,
-    messages:    messages as ChatCompletionMessageParam[],
-    temperature: 0.7,
-    max_tokens:  4096,
-    stream:      false as const,
-    ...(tools && tools.length > 0
-      ? {
-          tools:       tools as Groq.Chat.Completions.ChatCompletionTool[],
-          tool_choice: "auto" as const,
-        }
-      : {}),
-  };
+  for (const modelName of GROQ_MODELS) {
+    try {
+      const params = {
+        model:       modelName,
+        messages:    messages as ChatCompletionMessageParam[],
+        temperature: 0.7,
+        max_tokens:  4096,
+        stream:      false as const,
+        ...(tools && tools.length > 0
+          ? {
+              tools:       tools as Groq.Chat.Completions.ChatCompletionTool[],
+              tool_choice: "auto" as const,
+            }
+          : {}),
+      };
 
-  const res = await withTimeout(
-    client.chat.completions.create(params),
-    LLM_TIMEOUT_MS,
-    "Groq"
-  );
+      const res = await retryWithBackoff(
+        () => withTimeout(
+          client.chat.completions.create(params),
+          LLM_TIMEOUT_MS,
+          `Groq(${modelName})`
+        ),
+        2,
+        1500,
+        `Groq(${modelName})`
+      );
 
-  const choice = res.choices[0];
-  return {
-    content:      choice.message.content ?? null,
-    tool_calls:   (choice.message as any).tool_calls as ToolCall[] | undefined,
-    provider:     "groq",
-    usedFallback: false,
-  };
+      const choice = res.choices[0];
+      if (!choice) throw new Error("Groq no retornó choice");
+
+      const content = choice.message.content ?? null;
+      const toolCalls = (choice.message as any).tool_calls as ToolCall[] | undefined;
+
+      if (!content && !toolCalls) {
+        console.warn(`[LLM] Groq(${modelName}): respuesta vacía, intentando siguiente modelo...`);
+        continue;
+      }
+
+      return {
+        content:      content,
+        tool_calls:   toolCalls,
+        provider:     "groq",
+        usedFallback: false,
+      };
+    } catch (err: any) {
+      const isToolError =
+        err?.message?.includes("Tool use failed") ||
+        err?.message?.includes("tool_use_failed") ||
+        err?.message?.includes("function");
+
+      if (isToolError && modelName !== GROQ_MODELS[GROQ_MODELS.length - 1]) {
+        console.warn(`[LLM] Groq(${modelName}): error con tools, intentando siguiente modelo...`);
+        continue;
+      }
+
+      if (modelName === GROQ_MODELS[GROQ_MODELS.length - 1]) {
+        throw err;
+      }
+    }
+  }
+
+  throw new Error("Todos los modelos Groq fallaron");
 }
 
 async function callOpenRouter(
@@ -217,32 +322,66 @@ async function callOpenRouter(
     },
   });
 
-  const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
-    model:       OPENROUTER_MODEL,
-    messages:    messages as OpenAI.Chat.ChatCompletionMessageParam[],
-    temperature: 0.7,
-    max_tokens:  4096,
-    ...(tools && tools.length > 0
-      ? {
-          tools:       tools as OpenAI.Chat.ChatCompletionTool[],
-          tool_choice: "auto" as const,
-        }
-      : {}),
-  };
+  for (const modelName of OPENROUTER_MODELS) {
+    try {
+      const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+        model:       modelName,
+        messages:    messages as OpenAI.Chat.ChatCompletionMessageParam[],
+        temperature: 0.7,
+        max_tokens:  4096,
+        ...(tools && tools.length > 0
+          ? {
+              tools:       tools as OpenAI.Chat.ChatCompletionTool[],
+              tool_choice: "auto" as const,
+            }
+          : {}),
+      };
 
-  const res = await withTimeout(
-    client.chat.completions.create(params),
-    LLM_TIMEOUT_MS,
-    "OpenRouter"
-  );
+      const res = await retryWithBackoff(
+        () => withTimeout(
+          client.chat.completions.create(params),
+          LLM_TIMEOUT_MS,
+          `OpenRouter(${modelName})`
+        ),
+        2,
+        1500,
+        `OpenRouter(${modelName})`
+      );
 
-  const choice = res.choices[0];
-  return {
-    content:      choice.message.content ?? null,
-    tool_calls:   (choice.message as any).tool_calls as ToolCall[] | undefined,
-    provider:     "openrouter",
-    usedFallback: true,
-  };
+      const choice = res.choices[0];
+      if (!choice) throw new Error("OpenRouter no retornó choice");
+
+      const content = choice.message.content ?? null;
+      const toolCalls = (choice.message as any).tool_calls as ToolCall[] | undefined;
+
+      if (!content && !toolCalls) {
+        console.warn(`[LLM] OpenRouter(${modelName}): respuesta vacía, intentando siguiente...`);
+        continue;
+      }
+
+      return {
+        content:      content,
+        tool_calls:   toolCalls,
+        provider:     "openrouter",
+        usedFallback: true,
+      };
+    } catch (err: any) {
+      const isToolError =
+        err?.message?.includes("Tool use failed") ||
+        err?.message?.includes("tool_use_failed");
+
+      if (isToolError && modelName !== OPENROUTER_MODELS[OPENROUTER_MODELS.length - 1]) {
+        console.warn(`[LLM] OpenRouter(${modelName}): error con tools, intentando siguiente...`);
+        continue;
+      }
+
+      if (modelName === OPENROUTER_MODELS[OPENROUTER_MODELS.length - 1]) {
+        throw err;
+      }
+    }
+  }
+
+  throw new Error("Todos los modelos OpenRouter fallaron");
 }
 
 async function callGemini(
@@ -251,7 +390,6 @@ async function callGemini(
 ): Promise<LLMResponse> {
   const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
   
-  // Transformar tools al formato Gemini (arreglo de { functionDeclarations: [...] })
   const geminiTools = tools && tools.length > 0 
     ? [{
         functionDeclarations: tools.map(t => ({
@@ -262,15 +400,17 @@ async function callGemini(
       }]
     : undefined;
 
-  const model = genAI.getGenerativeModel({ 
-    model: GEMINI_MODEL,
-    tools: geminiTools as any,
-  });
-
   const systemMsg    = messages.find((m) => m.role === "system");
   const chatMessages = messages.filter((m) => m.role !== "system");
 
-  // Gemini requiere turnos alternados user/model/tool
+  const model = genAI.getGenerativeModel({
+    model: GEMINI_MODEL,
+    tools: geminiTools as any,
+    ...(systemMsg?.content ? {
+      systemInstruction: { role: "user", parts: [{ text: systemMsg.content }] }
+    } : {}),
+  });
+
   const history: any[] = [];
   for (let i = 0; i < chatMessages.length - 1; i++) {
     const m = chatMessages[i];
@@ -299,14 +439,16 @@ async function callGemini(
   }
 
   const lastMsg = chatMessages[chatMessages.length - 1];
-  const chat = model.startChat({
-    history,
-    ...(systemMsg?.content ? { systemInstruction: systemMsg.content } : {}),
-  });
+  const chat = model.startChat({ history });
 
-  const result = await withTimeout(
-    chat.sendMessage(lastMsg?.content ?? "continúa"),
-    LLM_TIMEOUT_MS,
+  const result = await retryWithBackoff(
+    () => withTimeout(
+      chat.sendMessage(lastMsg?.content ?? "continúa"),
+      LLM_TIMEOUT_MS,
+      "Gemini"
+    ),
+    2,
+    1500,
     "Gemini"
   );
 
@@ -333,40 +475,59 @@ async function callGemini(
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Cadena de fallback: Claude → Groq → OpenRouter → Gemini.
+ * Cadena de fallback inteligente:
+ * 1. Groq (modelos gratuitos con tool calling) - PRÁCTICAMENTE GRATIS
+ * 2. OpenRouter (modelos variados, algunos con trial credits)
+ * 3. Gemini (API gratuita con límites generosos)
+ * 4. Claude (como último recurso, requiere crédito)
  */
 export async function callLLM(
   messages: LLMMessage[],
   tools?: LLMTool[]
 ): Promise<LLMResponse> {
+  const providers = [];
+
+  // 1. Groq: siempre primero (modelos gratuitos)
+  if (process.env.GROQ_API_KEY) {
+    providers.push({ name: "Groq", fn: () => callGroq(messages, tools) });
+  }
+
+  // 2. OpenRouter: modelos variados
+  if (process.env.OPENROUTER_API_KEY) {
+    providers.push({ name: "OpenRouter", fn: () => callOpenRouter(messages, tools) });
+  }
+
+  // 3. Gemini: API gratuita (puede no tener credit pero tiene tier gratuito)
+  if (process.env.GOOGLE_API_KEY) {
+    providers.push({ name: "Gemini", fn: () => callGemini(messages, tools) });
+  }
+
+  // 4. Claude: último recurso (requiere crédito)
   if (process.env.ANTHROPIC_API_KEY) {
+    providers.push({ name: "Claude", fn: () => callClaude(messages, tools) });
+  }
+
+  if (providers.length === 0) {
+    throw new Error(
+      "No hay proveedores LLM configurados. " +
+      "Configura al menos una API key: GROQ_API_KEY, OPENROUTER_API_KEY, GOOGLE_API_KEY o ANTHROPIC_API_KEY"
+    );
+  }
+
+  let lastError: Error | undefined;
+
+  for (const provider of providers) {
     try {
-      console.log("[LLM] Intentando Claude...");
-      return await callClaude(messages, tools);
+      console.log(`[LLM] Intentando ${provider.name}...`);
+      return await provider.fn();
     } catch (err) {
-      console.warn("[LLM] Claude falló:", (err as Error).message);
+      lastError = err as Error;
+      console.warn(`[LLM] ${provider.name} falló:`, lastError.message);
     }
   }
 
-  try {
-    console.log("[LLM] Intentando Groq...");
-    return await callGroq(messages, tools);
-  } catch (err) {
-    console.warn("[LLM] Groq falló:", (err as Error).message);
-  }
-
-  try {
-    console.log("[LLM] Intentando OpenRouter...");
-    return await callOpenRouter(messages, tools);
-  } catch (err) {
-    console.warn("[LLM] OpenRouter falló:", (err as Error).message);
-  }
-
-  try {
-    console.log("[LLM] Intentando Gemini...");
-    return await callGemini(messages, tools);
-  } catch (err) {
-    console.error("[LLM] Gemini falló:", (err as Error).message);
-    throw new Error(`Todos los proveedores LLM fallaron. Último error: ${(err as Error).message}`);
-  }
+  throw new Error(
+    `Todos los proveedores LLM fallaron (${providers.map(p => p.name).join(", ")}). ` +
+    `Último error: ${lastError?.message}`
+  );
 }
