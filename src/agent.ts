@@ -22,11 +22,14 @@ export interface AgentResult {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const MAX_ITERATIONS              = 100;
+const MAX_ITERATIONS              = 15;
 const TOOL_TIMEOUT_MS             = 90_000;
 const MAX_TOOL_RESPONSE_CHARS     = 8_000;
-const CONSECUTIVE_LOOP_THRESHOLD  = 4;
+const MAX_HISTORY_MESSAGES        = 50;
+const CONSECUTIVE_LOOP_THRESHOLD  = 2;
 const ALTERNATING_LOOP_LENGTH     = 4;
+const MAX_LOOP_BREAKS             = 2;
+const MAX_SAME_TOOL_PER_RUN       = 3;
 
 // ─── needsToolUse ─────────────────────────────────────────────────────────────
 
@@ -44,12 +47,11 @@ function isConversational(text: string): boolean {
 export function needsToolUse(text: string): boolean {
   if (isConversational(text)) return false;
   
-  // Para respuestas del LLM: verificar si llamó a una herramienta
   if (text.includes("tool_use") || /\{.*"action":.*\}/.test(text) || text.includes("execute_tool")) {
     return true;
   }
 
-  return true;
+  return false;
 }
 
 // ─── Loop detection ───────────────────────────────────────────────────────────
@@ -109,13 +111,22 @@ function buildLLMTools(tools: Tool[]): LLMTool[] {
 
 // ─── Agent ───────────────────────────────────────────────────────────────────
 
+function trimMessageHistory(messages: LLMMessage[], maxMessages: number): LLMMessage[] {
+  if (messages.length <= maxMessages) return messages;
+  
+  const systemMsg = messages[0];
+  const rest = messages.slice(1);
+  const trimmed = rest.slice(-maxMessages);
+  
+  return [systemMsg, ...trimmed];
+}
+
 export async function runAgent(
   userMessage: string,
   options:     AgentOptions
 ): Promise<AgentResult> {
   const { tools, systemPrompt, userId } = options;
 
-  // ── Memory & Context injection ───────────────────────────────────────────
   const ctx = memoryService.getContext(userId, 15);
   
   const factBlock = ctx.facts.length > 0
@@ -128,17 +139,14 @@ export async function runAgent(
 
   const llmTools  = buildLLMTools(tools);
 
-  // ── Message assembly ───────────────────────────────────────────────────
   const messages: LLMMessage[] = [
     { role: "system", content: fullSystem },
   ];
 
-  // Inyectar historial previo
   ctx.recent_messages.forEach(m => {
     messages.push({ role: m.role as "user" | "assistant" | "tool", content: m.content });
   });
 
-  // Agregar mensaje actual del usuario
   let finalUserMessage = userMessage;
   if (options.extractedText) {
     finalUserMessage =
@@ -152,20 +160,25 @@ export async function runAgent(
   }
   messages.push(userMsg);
 
-  // ── State ────────────────────────────────────────────────────────────────
-  const usedTools:   string[] = [];
-  const toolHistory: string[] = [];
-  const toolMap       = new Map(tools.map((t) => [t.name, t]));
+  const usedTools:      string[] = [];
+  const toolHistory:    string[] = [];
+  const toolCallCount:  Map<string, number> = new Map();
+  const lastToolErrors: Map<string, string> = new Map();
+  const toolMap         = new Map(tools.map((t) => [t.name, t]));
   let iterations   = 0;
   let lastProvider = "groq";
   let warning: string | undefined;
   let geminiWarned = false;
   let loopBreaks   = 0;
 
-  // ── Agent loop ───────────────────────────────────────────────────────────
   while (iterations < MAX_ITERATIONS) {
     iterations++;
     console.log(`[AGENT] Iteración ${iterations}/${MAX_ITERATIONS}`);
+
+    if (messages.length > MAX_HISTORY_MESSAGES + 10) {
+      const trimmed = trimMessageHistory(messages, MAX_HISTORY_MESSAGES);
+      messages.splice(0, messages.length, ...trimmed);
+    }
 
     const activeTools = llmTools;
     let llmResponse: LLMResponse;
@@ -173,7 +186,6 @@ export async function runAgent(
     try {
       llmResponse = await callLLM(messages, activeTools);
       
-      // INTERCEPTOR DE ALUCINACIONES: Si el LLM mandó JSON en el texto pero no como tool_call
       if (!llmResponse.tool_calls && llmResponse.content && llmResponse.content.includes("{")) {
           try {
               const jsonMatch = llmResponse.content.match(/\{[\s\S]*\}/);
@@ -196,19 +208,23 @@ export async function runAgent(
           } catch { /* JSON inválido, ignorar */ }
       }
     } catch (err) {
-      throw new Error(`LLM no disponible: ${(err as Error).message}`);
+      return {
+        response: `❌ LLM no disponible: ${(err as Error).message}. Intenta de nuevo.`,
+        iterations,
+        usedTools: [...new Set(usedTools)],
+        provider: lastProvider,
+        warning: "Error de LLM",
+      };
     }
 
     lastProvider = llmResponse.provider;
 
     if (llmResponse.provider === "gemini" && !geminiWarned) {
       geminiWarned = true;
-      warning = "⚠️ *Fallback a Gemini* — herramientas no disponibles en esta respuesta.";
+      warning = "⚠️ Fallback a Gemini.";
     }
 
-    // ── Final answer ──────────────────────────────────────────────────────
-    const hasCalls =
-      llmResponse.tool_calls && llmResponse.tool_calls.length > 0;
+    const hasCalls = llmResponse.tool_calls && llmResponse.tool_calls.length > 0;
 
     if (!hasCalls) {
       return {
@@ -220,33 +236,59 @@ export async function runAgent(
       };
     }
 
-    // ── Append assistant turn ─────────────────────────────────────────────
     messages.push({
       role:       "assistant",
       content:    llmResponse.content,
       tool_calls: llmResponse.tool_calls,
     });
 
-    // ── Execute each tool call ────────────────────────────────────────────
     for (const toolCall of llmResponse.tool_calls!) {
       const toolName = toolCall.function.name;
       toolHistory.push(toolName);
       usedTools.push(toolName);
 
-      console.log(`[AGENT] Tool: ${toolName}`);
-
-      // Loop: consecutive
-      const consecutiveTool = detectConsecutiveLoop(toolHistory);
-      if (consecutiveTool) {
-        console.warn(`[AGENT] Bucle consecutivo: ${consecutiveTool}`);
+      // ─── Circuit breaker: límite de llamadas a la misma herramienta ───
+      const currentCount = (toolCallCount.get(toolName) || 0) + 1;
+      toolCallCount.set(toolName, currentCount);
+      
+      if (currentCount > MAX_SAME_TOOL_PER_RUN) {
+        console.warn(`[AGENT] Circuit breaker: '${toolName}' llamada ${currentCount} veces (máx ${MAX_SAME_TOOL_PER_RUN})`);
         loopBreaks++;
-        if (loopBreaks >= 3) {
+        if (loopBreaks >= MAX_LOOP_BREAKS) {
+          const lastErr = lastToolErrors.get(toolName);
+          const errInfo = lastErr ? `\n📋 Último error: ${lastErr}` : "";
           return {
-            response:   "No pude completar la tarea: entré en un bucle al usar la herramienta. Intenta reformular tu solicitud con más detalle.",
+            response:   `⚠️ Bucle detectado: '${toolName}' se ejecutó ${currentCount} veces.${errInfo}\n\n💡 Solución: ${lastErr ? "Revisa la configuración de la herramienta o reformula tu solicitud con más detalle." : "Reformula tu solicitud con instrucciones más específicas."}`,
             iterations,
             usedTools:  [...new Set(usedTools)],
             provider:   lastProvider,
-            warning:    "Loop persistente detectado",
+            warning:    "Circuit breaker activado",
+          };
+        }
+        messages.push({
+          role:         "tool",
+          tool_call_id: toolCall.id,
+          content:      `[SISTEMA: Prohibido usar '${toolName}' de nuevo. Responde directamente al usuario.]`,
+        });
+        continue;
+      }
+
+      console.log(`[AGENT] Tool: ${toolName} (llamada ${currentCount}/${MAX_SAME_TOOL_PER_RUN})`);
+
+      // ─── Loop detection: consecutivo ───
+      const consecutiveTool = detectConsecutiveLoop(toolHistory);
+      if (consecutiveTool) {
+        console.warn(`[AGENT] Bucle consecutivo detectado: ${consecutiveTool}`);
+        loopBreaks++;
+        if (loopBreaks >= MAX_LOOP_BREAKS) {
+          const lastErr = lastToolErrors.get(consecutiveTool);
+          const errInfo = lastErr ? `\n📋 Último error: ${lastErr}` : "";
+          return {
+            response:   `⚠️ Bucle consecutivo detectado con '${consecutiveTool}'. Detenido para evitar acciones repetidas.${errInfo}\n\n💡 Solución: ${lastErr ? "Revisa la configuración de la herramienta o reformula tu solicitud." : "Reformula tu solicitud con instrucciones más específicas."}`,
+            iterations,
+            usedTools:  [...new Set(usedTools)],
+            provider:   lastProvider,
+            warning:    "Loop persistente",
           };
         }
         messages.push({
@@ -254,35 +296,37 @@ export async function runAgent(
           tool_call_id: toolCall.id,
           content:
             `[SISTEMA: Bucle detectado — '${consecutiveTool}' llamada ` +
-            `${CONSECUTIVE_LOOP_THRESHOLD} veces seguidas. Cambia de estrategia.]`,
+            `${CONSECUTIVE_LOOP_THRESHOLD} veces. Cambia de estrategia inmediatamente.]`,
         });
         continue;
       }
 
-      // Loop: alternating
+      // ─── Loop detection: alternado ───
       if (detectAlternatingLoop(toolHistory)) {
-        console.warn("[AGENT] Bucle alternado detectado (ABAB)");
+        console.warn("[AGENT] Bucle alternado (ABAB) detectado");
         loopBreaks++;
-        if (loopBreaks >= 3) {
+        if (loopBreaks >= MAX_LOOP_BREAKS) {
+          const recentTools = toolHistory.slice(-4).join(" → ");
+          const errInfo = lastToolErrors.size > 0
+            ? `\n📋 Último error registrado: ${[...lastToolErrors.values()].at(-1)}`
+            : "";
           return {
-            response:   "No pude completar la tarea: entré en un bucle alternado. Intenta reformular tu solicitud con más detalle.",
+            response:   `⚠️ Bucle alternado detectado (patrón: ${recentTools}). Detenido para evitar acciones repetidas.${errInfo}\n\n💡 Solución: Reformula tu solicitud con instrucciones más específicas o verifica que las herramientas involucradas tengan sus credenciales configuradas.`,
             iterations,
             usedTools:  [...new Set(usedTools)],
             provider:   lastProvider,
-            warning:    "Loop alternado persistente",
+            warning:    "Loop alternado",
           };
         }
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
           content:
-            "[SISTEMA: Bucle alternado (ABAB) detectado. " +
-            "Responde directamente con la información disponible.]",
+            "[SISTEMA: Bucle alternado (ABAB). Responde directamente al usuario, NO uses más herramientas.]",
         });
         continue;
       }
 
-      // Tool not found
       const tool = toolMap.get(toolName);
       if (!tool) {
         messages.push({
@@ -293,7 +337,6 @@ export async function runAgent(
         continue;
       }
 
-      // Parse args
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(toolCall.function.arguments || "{}") as Record<string, unknown>;
@@ -301,15 +344,30 @@ export async function runAgent(
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
-          content: `[ERROR: JSON inválido en args de '${toolName}': ${toolCall.function.arguments}]`,
+          content: `[ERROR: JSON inválido en '${toolName}']`,
         });
         continue;
       }
 
-      // Execute
       try {
         const raw       = await executeToolWithTimeout(tool, args, String(userId));
         const truncated = truncateToolResponse(raw);
+
+        // ─── Auto-reparación: detectar errores en resultado ───
+        if (truncated.startsWith("❌")) {
+          lastToolErrors.set(toolName, truncated.slice(0, 300));
+          console.warn(`[AGENT] Tool '${toolName}' retornó error: ${truncated.slice(0, 100)}`);
+          if (currentCount >= 2) {
+            messages.push({
+              role:         "tool",
+              tool_call_id: toolCall.id,
+              name:         toolName,
+              content:      `[ERROR PERSISTENTE: '${toolName}' falló ${currentCount} veces. NO reintentar. Informa al usuario el error exacto.]`,
+            });
+            continue;
+          }
+        }
+        
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
@@ -324,17 +382,20 @@ export async function runAgent(
         });
       }
     }
+
+    if (messages.length > MAX_HISTORY_MESSAGES + 5) {
+      const trimmed = trimMessageHistory(messages, MAX_HISTORY_MESSAGES);
+      messages.splice(0, messages.length, ...trimmed);
+    }
   }
 
-  // ── Max iterations ────────────────────────────────────────────────────────
   console.error(`[AGENT] MAX_ITERATIONS (${MAX_ITERATIONS}) alcanzado`);
   return {
     response:
-      "⚠️ Se alcanzó el límite de iteraciones sin completar la tarea. " +
-      "Reformula tu solicitud con más detalle.",
+      "⚠️ Límite de iteraciones alcanzado. Reformula tu solicitud.",
     iterations,
     usedTools: [...new Set(usedTools)],
     provider:  lastProvider,
-    warning:   "MAX_ITERATIONS alcanzado",
+    warning:   "MAX_ITERATIONS",
   };
 }
