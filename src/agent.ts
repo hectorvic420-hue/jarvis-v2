@@ -31,6 +31,59 @@ const ALTERNATING_LOOP_LENGTH     = 4;
 const MAX_LOOP_BREAKS             = 2;
 const MAX_SAME_TOOL_PER_RUN       = 3;
 
+// ─── Loop Detection State ─────────────────────────────────────────────────────
+
+interface LoopDetectionState {
+  consecutiveCount: number;
+  lastToolName: string | null;
+  lastToolArgs: string | null;
+  toolCallHistory: string[];
+}
+
+const loopState = new Map<string, LoopDetectionState>();
+
+function getLoopState(userId: string): LoopDetectionState {
+  if (!loopState.has(userId)) {
+    loopState.set(userId, { consecutiveCount: 0, lastToolName: null, lastToolArgs: null, toolCallHistory: [] });
+  }
+  return loopState.get(userId)!;
+}
+
+function updateLoopState(userId: string, toolName: string, args: string): { loop: "consecutive" | "alternating" | null; count: number } {
+  const state = getLoopState(userId);
+  const isSameTool = state.lastToolName === toolName;
+  const isSameArgs = state.lastToolArgs === args;
+
+  state.toolCallHistory.push(toolName);
+  if (state.toolCallHistory.length > 10) state.toolCallHistory.shift();
+
+  if (isSameTool && isSameArgs) {
+    state.consecutiveCount++;
+  } else {
+    state.consecutiveCount = 1;
+  }
+
+  state.lastToolName = toolName;
+  state.lastToolArgs = args;
+
+  // Check alternating loop (ABAB pattern)
+  const history = state.toolCallHistory;
+  let alternating = false;
+  if (history.length >= 4) {
+    const [a, b, c, d] = history.slice(-4);
+    alternating = a === c && b === d && a !== b;
+  }
+
+  return {
+    loop: alternating ? "alternating" : (state.consecutiveCount >= CONSECUTIVE_LOOP_THRESHOLD ? "consecutive" : null),
+    count: state.consecutiveCount,
+  };
+}
+
+function resetLoopState(userId: string) {
+  loopState.delete(userId);
+}
+
 // ─── needsToolUse ─────────────────────────────────────────────────────────────
 
 function isConversational(text: string): boolean {
@@ -70,6 +123,32 @@ function detectAlternatingLoop(history: string[]): boolean {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Errores que NO tienen sentido reintentar: permisos, auth, token inválido.
+ * El agente debe informar al usuario inmediatamente en lugar de entrar en bucle.
+ */
+function isFatalError(response: string): boolean {
+  const FATAL_PATTERNS = [
+    "(#200)",          // Facebook: permiso insuficiente
+    "(#10)",           // Facebook: permiso denegado
+    "(#100)",          // Facebook: parámetro inválido
+    "OAuthException",
+    "permission",
+    "permissions",
+    "access_token",
+    "Invalid token",
+    "token expired",
+    "401",
+    "403",
+    "Unauthorized",
+    "Forbidden",
+    "no configurado",  // Variable de entorno faltante
+    "Falta ",          // "Falta WHAPI_TOKEN", etc.
+  ];
+  const lower = response.toLowerCase();
+  return FATAL_PATTERNS.some(p => lower.includes(p.toLowerCase()));
+}
 
 function truncateToolResponse(response: string): string {
   if (response.length <= MAX_TOOL_RESPONSE_CHARS) return response;
@@ -126,6 +205,7 @@ export async function runAgent(
   options:     AgentOptions
 ): Promise<AgentResult> {
   const { tools, systemPrompt, userId } = options;
+  const userIdStr = String(userId);
 
   const ctx = memoryService.getContext(userId, 15);
   
@@ -227,6 +307,7 @@ export async function runAgent(
     const hasCalls = llmResponse.tool_calls && llmResponse.tool_calls.length > 0;
 
     if (!hasCalls) {
+      resetLoopState(userIdStr);
       return {
         response:  llmResponse.content ?? "Sin respuesta del LLM.",
         iterations,
@@ -275,54 +356,53 @@ export async function runAgent(
 
       console.log(`[AGENT] Tool: ${toolName} (llamada ${currentCount}/${MAX_SAME_TOOL_PER_RUN})`);
 
-      // ─── Loop detection: consecutivo ───
-      const consecutiveTool = detectConsecutiveLoop(toolHistory);
-      if (consecutiveTool) {
-        console.warn(`[AGENT] Bucle consecutivo detectado: ${consecutiveTool}`);
+      // ─── Loop detection: usando estado por usuario ───
+      const toolArgs = toolCall.function.arguments || "{}";
+      const loopStatus = updateLoopState(userIdStr, toolName, toolArgs);
+
+      if (loopStatus.loop === "consecutive") {
+        console.warn(`[AGENT] Bucle consecutivo: '${toolName}' (${loopStatus.count} veces)`);
         loopBreaks++;
         if (loopBreaks >= MAX_LOOP_BREAKS) {
-          const lastErr = lastToolErrors.get(consecutiveTool);
+          const lastErr = lastToolErrors.get(toolName);
           const errInfo = lastErr ? `\n📋 Último error: ${lastErr}` : "";
           return {
-            response:   `⚠️ Bucle consecutivo detectado con '${consecutiveTool}'. Detenido para evitar acciones repetidas.${errInfo}\n\n💡 Solución: ${lastErr ? "Revisa la configuración de la herramienta o reformula tu solicitud." : "Reformula tu solicitud con instrucciones más específicas."}`,
+            response:   `⚠️ Bucle detectado: '${toolName}' se ejecutó ${loopStatus.count} veces con los mismos argumentos.${errInfo}\n\n💡 Solución: ${lastErr ? lastErr + " — " : ""}Reformula tu solicitud con más detalle o verifica la configuración de la herramienta.`,
             iterations,
             usedTools:  [...new Set(usedTools)],
             provider:   lastProvider,
-            warning:    "Loop persistente",
+            warning:    "Bucle consecutivo",
           };
         }
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
-          content:
-            `[SISTEMA: Bucle detectado — '${consecutiveTool}' llamada ` +
-            `${CONSECUTIVE_LOOP_THRESHOLD} veces. Cambia de estrategia inmediatamente.]`,
+          content:      `[SISTEMA: '${toolName}' llamada ${loopStatus.count} veces con mismos argumentos. Cambia de estrategia.]`,
         });
         continue;
       }
 
-      // ─── Loop detection: alternado ───
-      if (detectAlternatingLoop(toolHistory)) {
+      if (loopStatus.loop === "alternating") {
         console.warn("[AGENT] Bucle alternado (ABAB) detectado");
         loopBreaks++;
         if (loopBreaks >= MAX_LOOP_BREAKS) {
-          const recentTools = toolHistory.slice(-4).join(" → ");
-          const errInfo = lastToolErrors.size > 0
-            ? `\n📋 Último error registrado: ${[...lastToolErrors.values()].at(-1)}`
+          const recentTools = getLoopState(userIdStr).toolCallHistory.slice(-4).join(" → ");
+          const allErrors = [...lastToolErrors.entries()];
+          const errInfo = allErrors.length > 0
+            ? `\n📋 Errores recientes: ${allErrors.map(([name, err]) => `${name}: ${err}`).join("; ")}`
             : "";
           return {
-            response:   `⚠️ Bucle alternado detectado (patrón: ${recentTools}). Detenido para evitar acciones repetidas.${errInfo}\n\n💡 Solución: Reformula tu solicitud con instrucciones más específicas o verifica que las herramientas involucradas tengan sus credenciales configuradas.`,
+            response:   `⚠️ Bucle alternado detectado (patrón: ${recentTools}).${errInfo}\n\n💡 Solución: Verifica que las herramientas involucradas tengan credenciales configuradas o reformula tu solicitud.`,
             iterations,
             usedTools:  [...new Set(usedTools)],
             provider:   lastProvider,
-            warning:    "Loop alternado",
+            warning:    "Bucle alternado",
           };
         }
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
-          content:
-            "[SISTEMA: Bucle alternado (ABAB). Responde directamente al usuario, NO uses más herramientas.]",
+          content:      "[SISTEMA: Bucle alternado (ABAB). Responde directamente al usuario, NO uses más herramientas.]",
         });
         continue;
       }
@@ -353,10 +433,22 @@ export async function runAgent(
         const raw       = await executeToolWithTimeout(tool, args, String(userId));
         const truncated = truncateToolResponse(raw);
 
-        // ─── Auto-reparación: detectar errores en resultado ───
+        // ─── Detectar errores fatales (no reintentables) ───
         if (truncated.startsWith("❌")) {
           lastToolErrors.set(toolName, truncated.slice(0, 300));
           console.warn(`[AGENT] Tool '${toolName}' retornó error: ${truncated.slice(0, 100)}`);
+
+          if (isFatalError(truncated)) {
+            console.warn(`[AGENT] Error fatal en '${toolName}' — retornando inmediatamente.`);
+            return {
+              response:  truncated,
+              iterations,
+              usedTools: [...new Set(usedTools)],
+              provider:  lastProvider,
+              warning:   `Error fatal en '${toolName}' (no reintentable)`,
+            };
+          }
+
           if (currentCount >= 2) {
             messages.push({
               role:         "tool",
@@ -390,6 +482,7 @@ export async function runAgent(
   }
 
   console.error(`[AGENT] MAX_ITERATIONS (${MAX_ITERATIONS}) alcanzado`);
+  resetLoopState(userIdStr);
   return {
     response:
       "⚠️ Límite de iteraciones alcanzado. Reformula tu solicitud.",
