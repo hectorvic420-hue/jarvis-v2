@@ -8,15 +8,18 @@ const path          = require("path");
 const execAsync = promisify(exec);
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-const PROJECT_ROOT      = process.env.JARVIS_ROOT          ?? "/opt/jarvis/jarvis-v2";
-const BOT_TOKEN         = process.env.TELEGRAM_BOT_TOKEN;
-const OWNER_CHAT_ID     = process.env.TELEGRAM_OWNER_CHAT_ID;
-const ANTHROPIC_KEY     = process.env.ANTHROPIC_API_KEY;
-const RATE_LIMIT_FILE   = "/tmp/watchdog-repairs.json";
-const MAX_REPAIRS_HOUR  = 3;
-const CHECK_INTERVAL_MS = 30_000;
-const PORT              = process.env.PORT ?? 8080;
-const HEALTH_INTERVAL_MS = 5 * 60 * 1000;
+const PROJECT_ROOT           = process.env.JARVIS_ROOT          ?? "/opt/jarvis/jarvis-v2";
+const BOT_TOKEN              = process.env.TELEGRAM_BOT_TOKEN;
+const OWNER_CHAT_ID          = process.env.TELEGRAM_OWNER_CHAT_ID;
+const ANTHROPIC_KEY          = process.env.ANTHROPIC_API_KEY;
+const GROQ_API_KEY           = process.env.GROQ_API_KEY;
+const RATE_LIMIT_FILE        = "/tmp/watchdog-repairs.json";
+const MAX_REPAIRS_HOUR       = 3;
+const CHECK_INTERVAL_MS      = 30_000;
+const PORT                   = process.env.PORT ?? 8080;
+const HEALTH_INTERVAL_MS     = 5 * 60 * 1000;
+// Error notification deduplication — same error key won't spam more than once per 30 min
+const ERROR_NOTIFY_COOLDOWN_MS = 30 * 60 * 1000;
 
 // ─── Rate limiter ──────────────────────────────────────────────────────────────
 function getRepairsInLastHour() {
@@ -102,7 +105,7 @@ function detectInfraIssue(logs) {
   return null;
 }
 
-// ─── Claude API (raw fetch — no SDK dependency) ───────────────────────────────
+// ─── LLM APIs (raw fetch — no SDK dependency) ────────────────────────────────
 async function callClaude(system, userMsg, maxTokens = 8192) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:  "POST",
@@ -121,6 +124,53 @@ async function callClaude(system, userMsg, maxTokens = 8192) {
   if (!res.ok) throw new Error(`Claude API ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return data.content[0].text;
+}
+
+async function callGroq(system, userMsg, maxTokens = 8192) {
+  if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not set");
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method:  "POST",
+    headers: {
+      "Content-Type":  "application/json",
+      "Authorization": `Bearer ${GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model:      "qwen-qwq-32b",
+      max_tokens: maxTokens,
+      messages:   [
+        { role: "system",  content: system  },
+        { role: "user",    content: userMsg },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`Groq API ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data.choices[0].message.content;
+}
+
+/** Try Claude first; fall back to Groq if Claude fails (e.g. no credits). */
+async function callLLMWithFallback(system, userMsg, maxTokens = 8192) {
+  try {
+    return await callClaude(system, userMsg, maxTokens);
+  } catch (claudeErr) {
+    console.warn(`[watchdog] Claude falló (${claudeErr.message.slice(0, 80)}), usando Groq…`);
+    return await callGroq(system, userMsg, maxTokens);
+  }
+}
+
+// ─── Error notification deduplication ────────────────────────────────────────
+/** Map<errorKey, lastNotifiedTimestamp> */
+const lastNotifiedAt = new Map();
+
+/**
+ * Send Telegram notification only if we haven't sent the same errorKey recently.
+ * errorKey should be a short stable string identifying the error category.
+ */
+async function notifyOnce(errorKey, message) {
+  const last = lastNotifiedAt.get(errorKey) ?? 0;
+  if (Date.now() - last < ERROR_NOTIFY_COOLDOWN_MS) return;
+  lastNotifiedAt.set(errorKey, Date.now());
+  await notifyTelegram(message);
 }
 
 // ─── Git commit ───────────────────────────────────────────────────────────────
@@ -189,12 +239,12 @@ async function repairJarvis(logs) {
   let fixedCode, fixSummary;
   try {
     [fixedCode, fixSummary] = await Promise.all([
-      callClaude(
+      callLLMWithFallback(
         "You are fixing a bug in Jarvis V2, a TypeScript/Node.js Telegram bot. " +
         "Return ONLY the complete corrected TypeScript file — no explanation, no markdown fences, just raw TypeScript.",
         `ERROR LOGS:\n${logs}\n\nPRIMARY FILE (${targetRelPath}):\n${originalCode}\n\nCONTEXT:${agentContext}\n\nFix the PRIMARY FILE. Return ONLY its complete corrected TypeScript.`
       ),
-      callClaude(
+      callLLMWithFallback(
         "Generate a short git commit message suffix (under 60 chars, no quotes) describing the fix.",
         `File: ${targetRelPath}\nError: ${logs.slice(0, 400)}`,
         128
@@ -203,7 +253,7 @@ async function repairJarvis(logs) {
     fixedCode  = fixedCode.trim();
     fixSummary = fixSummary.trim().slice(0, 60);
   } catch (err) {
-    await notifyTelegram(`❌ *Watchdog:* Claude API falló: ${err.message.slice(0, 200)}`);
+    await notifyOnce("llm_api_failed", `❌ *Watchdog:* LLM API falló (Claude + Groq): ${err.message.slice(0, 200)}`);
     return;
   }
 
@@ -268,14 +318,14 @@ async function checkAgentHealth() {
     const res = await fetch(`http://localhost:${PORT}/health`, { timeout: 10_000 });
     if (!res.ok) {
       console.log(`[watchdog] Health check falló: status ${res.status}`);
-      await notifyTelegram(`⚠️ *Health check falló:* HTTP ${res.status}`);
+      await notifyOnce("health_http_error", `⚠️ *Health check falló:* HTTP ${res.status}`);
       return;
     }
 
     const data = await res.json();
     if (data.status !== "ok") {
       console.log(`[watchdog] Health check falló: status ${data.status}`);
-      await notifyTelegram(`⚠️ *Health check falló:* status ${data.status}`);
+      await notifyOnce("health_status_bad", `⚠️ *Health check falló:* status ${data.status}`);
       return;
     }
 
@@ -292,7 +342,7 @@ async function checkAgentHealth() {
     }
   } catch (err) {
     console.log(`[watchdog] Health check falló: ${err.message}`);
-    await notifyTelegram(`⚠️ *Health check falló:* ${err.message.slice(0, 100)}`);
+    await notifyOnce("health_exception", `⚠️ *Health check falló:* ${err.message.slice(0, 100)}`);
   }
 }
 

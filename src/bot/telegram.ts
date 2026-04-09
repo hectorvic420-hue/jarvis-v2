@@ -1,5 +1,5 @@
 import { Bot, Context, session, SessionFlavor, InputFile } from "grammy";
-import { runAgent }       from "../agent";
+import { runAgent, runAgentWithPlan } from "../agent";
 import { tools as toolRegistry, listTools, SYSTEM_PROMPT } from "../tools/index.js";
 import { memoryService } from "../memory/service.js";
 import {
@@ -360,7 +360,7 @@ export function createTelegramBot(): Bot<BotCtx> {
     const processingMsg = await ctx.reply("⏳ Procesando...");
 
     try {
-      const result = await runAgent(text, {
+      const result = await runAgentWithPlan(text, {
         tools,
         systemPrompt: SYSTEM_PROMPT,
         userId,
@@ -372,6 +372,7 @@ export function createTelegramBot(): Bot<BotCtx> {
 
       const conversation = memoryService.getMessages(userId, 10);
       memoryService.extractAndSaveFacts(String(userId), conversation).catch(() => {});
+      memoryService.compressOldMessages(String(userId)).catch(() => {});
 
       const response = result.warning
         ? `${result.warning}\n\n${result.response}`
@@ -415,7 +416,7 @@ export function createTelegramBot(): Bot<BotCtx> {
       const tools = Object.values(toolRegistry);
       memoryService.addMessage(userId, "user", `[imagen] ${caption}`, "telegram");
 
-      const result = await runAgent(caption, {
+      const result = await runAgentWithPlan(caption, {
         tools,
         systemPrompt: SYSTEM_PROMPT,
         userId,
@@ -426,6 +427,7 @@ export function createTelegramBot(): Bot<BotCtx> {
       memoryService.addMessage(userId, "assistant", result.response, "telegram");
       const conversation = memoryService.getMessages(userId, 10);
       memoryService.extractAndSaveFacts(String(userId), conversation).catch(() => {});
+      memoryService.compressOldMessages(String(userId)).catch(() => {});
     } catch (err) {
       await tryDelete(ctx, processingMsg.message_id);
       await ctx.reply(`❌ Error analizando imagen: ${(err as Error).message}`);
@@ -469,6 +471,7 @@ export function createTelegramBot(): Bot<BotCtx> {
       memoryService.addMessage(userId, "assistant", result.response, "telegram");
       const conversation = memoryService.getMessages(userId, 10);
       memoryService.extractAndSaveFacts(String(userId), conversation).catch(() => {});
+      memoryService.compressOldMessages(String(userId)).catch(() => {});
       await sendLong(ctx, result.response);
     } catch (err) {
       await tryDelete(ctx, processingMsg.message_id);
