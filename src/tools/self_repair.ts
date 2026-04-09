@@ -119,7 +119,7 @@ async function runRepair(chatId: string): Promise<string> {
   const infraIssue = detectInfraIssue(logs);
   if (infraIssue) {
     const infraResult = await runInfraFix(infraIssue);
-    if (infraIssue.fix) {
+    if (infraResult.startsWith("✅")) {
       try {
         await execAsync("pm2 restart jarvis-v2", { cwd: PROJECT_ROOT, timeout: 30_000 });
       } catch { /* best-effort */ }
