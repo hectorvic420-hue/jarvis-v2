@@ -43,12 +43,14 @@ function findChromiumExecutable(): string | undefined {
   }
 
   const candidates = [
-    // Playwright cache for hectorvic420 (common GCP setup)
+    // Playwright cache for hectorvic420 (GCP setup — chrome-linux64)
+    "/home/hectorvic420/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome",
+    "/home/hectorvic420/.cache/ms-playwright/chromium_headless_shell-1217/chrome-linux64/headless_shell",
+    // Fallback: chrome-linux (older playwright versions)
     "/home/hectorvic420/.cache/ms-playwright/chromium-1217/chrome-linux/chrome",
-    "/home/hectorvic420/.cache/ms-playwright/chromium_headless_shell-1217/chrome-linux/headless_shell",
-    // Root cache (if installed as root)
+    // Root cache
+    "/root/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome",
     "/root/.cache/ms-playwright/chromium-1217/chrome-linux/chrome",
-    "/root/.cache/ms-playwright/chromium_headless_shell-1217/chrome-linux/headless_shell",
     // System chromium
     "/usr/bin/chromium-browser",
     "/usr/bin/chromium",
