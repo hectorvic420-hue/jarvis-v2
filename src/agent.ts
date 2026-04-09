@@ -1,6 +1,7 @@
 import { callLLM, LLMMessage, LLMTool, LLMResponse, ImageBlock, ToolCall } from "./llm.js";
 import { Tool } from "./shared/types.js";
 import { memoryService } from "./memory/service.js";
+import { selfRepairTool } from "./tools/self_repair.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +48,30 @@ function isFatalError(response: string): boolean {
   ];
   const lower = response.toLowerCase();
   return FATAL_PATTERNS.some(p => lower.includes(p.toLowerCase()));
+}
+
+/**
+ * Fires self-repair in background if tool errors look like fixable code bugs.
+ * Does NOT await — repair happens async, notifies via Telegram.
+ */
+function maybeAutoRepair(
+  lastToolErrors: Map<string, string>,
+  userId: string
+): void {
+  if (lastToolErrors.size === 0) return;
+
+  const allErrors = [...lastToolErrors.values()].join(" ");
+  if (isFatalError(allErrors)) return;
+
+  const hasRuntimeError = [...lastToolErrors.values()].some(
+    e => e.includes("TypeError") || e.includes("Error:") || e.includes("Cannot read") || e.includes("undefined")
+  );
+  if (!hasRuntimeError) return;
+
+  console.log("[AGENT] Auto-triggering self_repair for user", userId);
+  selfRepairTool.execute({ action: "repair" }, userId).catch(err => {
+    console.error("[AGENT] Auto-repair failed:", err.message);
+  });
 }
 
 function truncateToolResponse(response: string): string {
@@ -288,6 +313,7 @@ export async function runAgent(
         console.warn(`[AGENT] Circuit breaker '${toolName}' (${currentCount} llamadas)`);
 
         if (loopBreaks >= MAX_LOOP_BREAKS) {
+          maybeAutoRepair(lastToolErrors, String(userId));
           return {
             response:  `⚠️ No puedo completar esta tarea: '${toolName}' fue llamada ${currentCount} veces sin éxito.${errInfo}\n\n${lastErr ? "Causa: " + lastErr : "Reformula tu solicitud con más detalle."}`,
             iterations,
@@ -320,6 +346,7 @@ export async function runAgent(
         console.warn(`[AGENT] Bucle consecutivo '${toolName}' (${consecSameCount} veces con mismos args)`);
 
         if (loopBreaks >= MAX_LOOP_BREAKS) {
+          maybeAutoRepair(lastToolErrors, String(userId));
           return {
             response:  `⚠️ Bucle detectado: '${toolName}' fue llamada ${consecSameCount} veces con los mismos parámetros.${lastErr ? "\nError: " + lastErr : ""}\n\n${lastErr ? "No puedo continuar: " + lastErr : "Reformula tu solicitud con instrucciones más específicas."}`,
             iterations,
@@ -345,6 +372,7 @@ export async function runAgent(
           console.warn(`[AGENT] Bucle alternado: ${a}→${b}→${c}→${d}`);
 
           if (loopBreaks >= MAX_LOOP_BREAKS) {
+            maybeAutoRepair(lastToolErrors, String(userId));
             const allErrors = [...lastToolErrors.entries()];
             const errInfo   = allErrors.length > 0
               ? `\nErrores: ${allErrors.map(([n, e]) => `${n}: ${e}`).join("; ")}`
@@ -450,6 +478,7 @@ export async function runAgent(
   } // fin while
 
   console.error(`[AGENT] MAX_ITERATIONS (${MAX_ITERATIONS}) alcanzado`);
+  maybeAutoRepair(lastToolErrors, String(userId));
   return {
     response:  "⚠️ Límite de iteraciones alcanzado. La tarea es demasiado compleja para un solo paso. Intenta dividirla en partes más pequeñas.",
     iterations,
