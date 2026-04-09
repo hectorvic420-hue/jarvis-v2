@@ -37,10 +37,21 @@ export interface Task {
   updated_at:  string;
 }
 
+export interface Episode {
+  id:         number;
+  user_id:    string;
+  title:      string;
+  summary:    string;
+  tools_used: string;   // JSON array string
+  outcome:    string | null;
+  created_at: string;
+}
+
 export interface MemoryContext {
-  recent_messages: Message[];
-  facts:           Fact[];
-  summary?:        string;
+  recent_messages:    Message[];
+  facts:              Fact[];
+  summary?:           string;
+  relevant_episodes?: Episode[];
 }
 
 // ─── Prepared statements ──────────────────────────────────────────────────────
@@ -145,6 +156,33 @@ const stmts = {
     ORDER BY created_at DESC
     LIMIT 1
   `),
+
+  // Episodes
+  insertEpisode: db.prepare(`
+    INSERT INTO episodes (user_id, title, summary, tools_used, outcome)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+
+  searchEpisodesFts: db.prepare(`
+    SELECT e.*
+    FROM episodes e
+    WHERE e.user_id = ?
+      AND e.id IN (
+        SELECT rowid FROM episodes_fts
+        WHERE episodes_fts MATCH ?
+        ORDER BY rank
+        LIMIT 10
+      )
+    ORDER BY e.created_at DESC
+    LIMIT ?
+  `),
+
+  getRecentEpisodes: db.prepare(`
+    SELECT * FROM episodes
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `),
 };
 
 // ─── Message operations ───────────────────────────────────────────────────────
@@ -175,7 +213,7 @@ function countMessages(userId: string | number): number {
   return row.count;
 }
 
-async function compressOldMessages(userId: string, keepLast = 30): Promise<void> {
+async function compressOldMessages(userId: string): Promise<void> {
   if (countMessages(userId) <= 100) return;
 
   try {
@@ -289,6 +327,59 @@ async function extractAndSaveFacts(userId: string, conversation: Message[]): Pro
   }
 }
 
+// ─── Episode operations ───────────────────────────────────────────────────────
+
+function saveEpisode(
+  userId: string | number,
+  data: { title: string; summary: string; tools_used: string[]; outcome?: string }
+): void {
+  try {
+    stmts.insertEpisode.run(
+      String(userId),
+      data.title.slice(0, 120),
+      data.summary.slice(0, 400),
+      JSON.stringify(data.tools_used),
+      data.outcome ?? "success"
+    );
+  } catch (err) {
+    console.warn("[MEMORY] saveEpisode failed:", (err as Error).message);
+  }
+}
+
+/** Sanitize a free-text query for FTS5: strip special syntax chars, keep Spanish letters */
+function sanitizeFtsQuery(query: string): string {
+  return query
+    .toLowerCase()
+    .replace(/[^\wáéíóúñüÁÉÍÓÚÑÜ\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 2)
+    .slice(0, 8)          // max 8 terms to avoid query explosion
+    .join(" ");
+}
+
+function searchEpisodes(
+  userId: string | number,
+  query: string,
+  limit = 3
+): Episode[] {
+  try {
+    const ftsQuery = sanitizeFtsQuery(query);
+    if (!ftsQuery) {
+      // No usable terms → fall back to most recent episodes
+      return stmts.getRecentEpisodes.all(String(userId), limit) as Episode[];
+    }
+    const results = stmts.searchEpisodesFts.all(String(userId), ftsQuery, limit) as Episode[];
+    // If FTS found nothing, fall back to recents
+    if (results.length === 0) {
+      return stmts.getRecentEpisodes.all(String(userId), limit) as Episode[];
+    }
+    return results;
+  } catch {
+    // FTS can throw on malformed queries — silent fallback
+    return stmts.getRecentEpisodes.all(String(userId), limit) as Episode[];
+  }
+}
+
 // ─── Task operations ──────────────────────────────────────────────────────────
 function saveTask(userId: string | number, title: string, description?: string, priority = 2, dueAt?: string): number {
   const result = stmts.insertTask.run(String(userId), title, description ?? null, priority, dueAt ?? null);
@@ -335,7 +426,7 @@ function formatContextForPrompt(userId: string | number, messageLimit = 20): str
 }
 
 // ─── Legacy/Placeholders ─────────────────────────────────────────────────────
-function auditLog(action: string, payload?: any, userId?: string | number, status: "ok" | "error" = "ok"): void {
+function auditLog(action: string, _payload?: unknown, userId?: string | number, status: "ok" | "error" = "ok"): void {
   console.log(`[AUDIT] ${action} | User: ${userId} | Status: ${status}`);
 }
 
@@ -378,6 +469,10 @@ export const memoryService = {
 
   // Response reflection
   reflectOnResponse,
+
+  // Episodes (episodic memory)
+  saveEpisode,
+  searchEpisodes,
 
   // Misc
   auditLog,

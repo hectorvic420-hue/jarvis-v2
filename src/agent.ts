@@ -303,7 +303,16 @@ export async function runAgent(
     ? `\n\n## RESUMEN CONVERSACIÓN ANTERIOR:\n${latestSummary}`
     : "";
 
-  const fullSystem = systemPrompt + factBlock + timeBlock + summaryBlock;
+  const episodes = memoryService.searchEpisodes(String(userId), userMessage, 3);
+  const episodesBlock = episodes.length > 0
+    ? `\n\n## EPISODIOS RELEVANTES (memoria de sesiones pasadas):\n` +
+      episodes.map(e =>
+        `- [${e.created_at?.slice(0, 10)}] ${e.title} → ${e.summary}` +
+        (e.outcome === "partial" ? " ⚠️ (incompleto)" : "")
+      ).join("\n")
+    : "";
+
+  const fullSystem = systemPrompt + factBlock + timeBlock + summaryBlock + episodesBlock;
 
   const llmTools = buildLLMTools(tools);
   const toolMap  = new Map(tools.map((t) => [t.name, t]));
@@ -443,6 +452,17 @@ export async function runAgent(
         warning,
       };
       logRun(traceId, startTime, userId, result);
+
+      // Save episode only when tools were actually used (skip pure conversation)
+      if (successfulToolCalls > 0) {
+        memoryService.saveEpisode(String(userId), {
+          title:      userMessage.slice(0, 80),
+          summary:    responseText.slice(0, 300),
+          tools_used: [...new Set(usedTools)],
+          outcome:    warning ? "partial" : "success",
+        });
+      }
+
       return result;
     }
 
@@ -682,6 +702,17 @@ export async function runAgent(
     warning:   "MAX_ITERATIONS",
   };
   logRun(traceId, startTime, userId, result);
+
+  // Save partial episode so we remember what was attempted
+  if (successfulToolCalls > 0) {
+    memoryService.saveEpisode(String(userId), {
+      title:      userMessage.slice(0, 80),
+      summary:    `Tarea incompleta — alcanzó límite de iteraciones. Tools usadas: ${[...new Set(usedTools)].join(", ")}`,
+      tools_used: [...new Set(usedTools)],
+      outcome:    "partial",
+    });
+  }
+
   return result;
 }
 

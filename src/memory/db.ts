@@ -104,6 +104,53 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs(user_id);
   CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
+
+  CREATE TABLE IF NOT EXISTS conversation_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    messages_covered INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS episodes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT    NOT NULL,
+    title      TEXT    NOT NULL,
+    summary    TEXT    NOT NULL,
+    tools_used TEXT    NOT NULL DEFAULT '[]',
+    outcome    TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_episodes_user    ON episodes(user_id);
+  CREATE INDEX IF NOT EXISTS idx_episodes_created ON episodes(user_id, created_at DESC);
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
+    title,
+    summary,
+    outcome,
+    content=episodes,
+    content_rowid=id,
+    tokenize="unicode61"
+  );
+
+  CREATE TRIGGER IF NOT EXISTS episodes_fts_ai AFTER INSERT ON episodes BEGIN
+    INSERT INTO episodes_fts(rowid, title, summary, outcome)
+    VALUES (new.id, new.title, new.summary, new.outcome);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS episodes_fts_ad AFTER DELETE ON episodes BEGIN
+    INSERT INTO episodes_fts(episodes_fts, rowid, title, summary, outcome)
+    VALUES ('delete', old.id, old.title, old.summary, old.outcome);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS episodes_fts_au AFTER UPDATE ON episodes BEGIN
+    INSERT INTO episodes_fts(episodes_fts, rowid, title, summary, outcome)
+    VALUES ('delete', old.id, old.title, old.summary, old.outcome);
+    INSERT INTO episodes_fts(rowid, title, summary, outcome)
+    VALUES (new.id, new.title, new.summary, new.outcome);
+  END;
 `);
 
 // ─── Graceful Shutdown ─────────────────────────────────────────────────────────
