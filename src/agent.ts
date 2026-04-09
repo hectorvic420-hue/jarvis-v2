@@ -3,6 +3,10 @@ import { Tool } from "./shared/types.js";
 import { memoryService } from "./memory/service.js";
 import { selfRepairTool } from "./tools/self_repair.js";
 import db from "./memory/db.js";
+import { getCached, setCached, pruneExpiredCache } from "./shared/toolCache.js";
+
+// Prune stale cache entries every 5 minutes
+setInterval(pruneExpiredCache, 5 * 60 * 1000);
 
 // ─── Agent Run Logging ───────────────────────────────────────────────────────────
 
@@ -126,7 +130,14 @@ async function executeToolWithTimeout(
   args:   Record<string, unknown>,
   chatId: string
 ): Promise<string> {
-  return Promise.race([
+  // Check cache first (only for cacheable tools)
+  const cached = getCached(tool.name, args);
+  if (cached !== null) {
+    console.log(`[CACHE] Hit: ${tool.name}`);
+    return cached;
+  }
+
+  const result = await Promise.race([
     tool.execute(args, chatId),
     new Promise<string>((_, reject) =>
       setTimeout(
@@ -135,6 +146,10 @@ async function executeToolWithTimeout(
       )
     ),
   ]);
+
+  // Store in cache after successful execution
+  setCached(tool.name, args, result);
+  return result;
 }
 
 function buildLLMTools(tools: Tool[]): LLMTool[] {
