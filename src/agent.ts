@@ -2,6 +2,45 @@ import { callLLM, LLMMessage, LLMTool, LLMResponse, ImageBlock, ToolCall } from 
 import { Tool } from "./shared/types.js";
 import { memoryService } from "./memory/service.js";
 import { selfRepairTool } from "./tools/self_repair.js";
+import db from "./memory/db.js";
+
+// ─── Agent Run Logging ───────────────────────────────────────────────────────────
+
+const insertRunStmt = db.prepare(`
+  INSERT INTO agent_runs (trace_id, user_id, input_preview, iterations, tools_used, provider, status, warning, duration_ms)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+function logRun(
+  traceId: string,
+  startTime: number,
+  userId: string | number,
+  result: AgentResult,
+  inputPreview: string = ""
+): void {
+  try {
+    const durationMs = Date.now() - startTime;
+    const ERROR_WARNINGS = ["Circuit breaker", "Bucle", "Error de LLM", "Error fatal"];
+    const status = result.warning?.includes("MAX_ITERATIONS") ? "max_iterations"
+      : ERROR_WARNINGS.some(e => result.warning?.includes(e)) ? "error"
+      : result.warning ? "warning"
+      : "success";
+    
+    insertRunStmt.run(
+      traceId,
+      String(userId),
+      inputPreview,
+      result.iterations,
+      JSON.stringify(result.usedTools),
+      result.provider,
+      status,
+      result.warning || null,
+      durationMs
+    );
+  } catch (err) {
+    console.warn("[AGENT] Failed to log run:", (err as Error).message);
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,9 +150,43 @@ function buildLLMTools(tools: Tool[]): LLMTool[] {
 
 function trimMessageHistory(messages: LLMMessage[], maxMessages: number): LLMMessage[] {
   if (messages.length <= maxMessages) return messages;
+
   const systemMsg = messages[0];
   const rest = messages.slice(1);
-  return [systemMsg, ...rest.slice(-maxMessages)];
+
+  const blocks: LLMMessage[][] = [];
+  let currentBlock: LLMMessage[] = [];
+  let lastAssistantWithCalls: LLMMessage | null = null;
+
+  for (const msg of rest) {
+    if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+      if (currentBlock.length > 0) {
+        blocks.push(currentBlock);
+      }
+      currentBlock = [msg];
+      lastAssistantWithCalls = msg;
+    } else if (msg.role === "tool" && lastAssistantWithCalls) {
+      currentBlock.push(msg);
+    } else {
+      if (currentBlock.length > 0) {
+        blocks.push(currentBlock);
+      }
+      currentBlock = [msg];
+      lastAssistantWithCalls = null;
+    }
+  }
+
+  if (currentBlock.length > 0) {
+    blocks.push(currentBlock);
+  }
+
+  while (blocks.length > 0) {
+    const totalMsgs = 1 + blocks.reduce((sum, b) => sum + b.length, 0);
+    if (totalMsgs <= maxMessages) break;
+    blocks.shift();
+  }
+
+  return [systemMsg, ...blocks.flat()];
 }
 
 /**
@@ -179,6 +252,9 @@ export async function runAgent(
 ): Promise<AgentResult> {
   const { tools, systemPrompt, userId } = options;
 
+  const traceId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startTime = Date.now();
+
   // ─── Construir contexto ───
   const ctx = memoryService.getContext(userId, 15);
 
@@ -227,6 +303,7 @@ export async function runAgent(
   let consecSameCount: number        = 0;     // veces seguidas con misma tool+args
 
   let iterations   = 0;
+  let successfulToolCalls = 0;
   let lastProvider = "groq";
   let warning: string | undefined;
   let geminiWarned = false;
@@ -236,6 +313,18 @@ export async function runAgent(
   while (iterations < MAX_ITERATIONS) {
     iterations++;
     console.log(`[AGENT] Iteración ${iterations}/${MAX_ITERATIONS}`);
+
+    if (iterations > 4 && successfulToolCalls === 0) {
+      const result = {
+        response:  "No se pudo completar ninguna acción. Verifica la configuración.",
+        iterations,
+        usedTools: [...new Set(usedTools)],
+        provider:  lastProvider,
+        warning:   "Sin tools exitosas",
+      };
+      logRun(traceId, startTime, userId, result);
+      return result;
+    }
 
     if (messages.length > MAX_HISTORY_MESSAGES + 10) {
       const trimmed = trimMessageHistory(messages, MAX_HISTORY_MESSAGES);
@@ -257,13 +346,15 @@ export async function runAgent(
         }
       }
     } catch (err) {
-      return {
+      const result = {
         response:  `❌ LLM no disponible: ${(err as Error).message}. Intenta de nuevo.`,
         iterations,
         usedTools: [...new Set(usedTools)],
         provider:  lastProvider,
         warning:   "Error de LLM",
       };
+      logRun(traceId, startTime, userId, result);
+      return result;
     }
 
     lastProvider = llmResponse.provider;
@@ -277,13 +368,15 @@ export async function runAgent(
 
     // Sin tool calls → el LLM terminó, retornar respuesta final
     if (!hasCalls) {
-      return {
+      const result = {
         response:  llmResponse.content ?? "Sin respuesta del LLM.",
         iterations,
         usedTools: [...new Set(usedTools)],
         provider:  lastProvider,
         warning,
       };
+      logRun(traceId, startTime, userId, result);
+      return result;
     }
 
     messages.push({
@@ -314,13 +407,15 @@ export async function runAgent(
 
         if (loopBreaks >= MAX_LOOP_BREAKS) {
           maybeAutoRepair(lastToolErrors, String(userId));
-          return {
+          const result = {
             response:  `⚠️ No puedo completar esta tarea: '${toolName}' fue llamada ${currentCount} veces sin éxito.${errInfo}\n\n${lastErr ? "Causa: " + lastErr : "Reformula tu solicitud con más detalle."}`,
             iterations,
             usedTools: [...new Set(usedTools)],
             provider:  lastProvider,
             warning:   "Circuit breaker activado",
           };
+          logRun(traceId, startTime, userId, result);
+          return result;
         }
 
         messages.push({
@@ -347,13 +442,15 @@ export async function runAgent(
 
         if (loopBreaks >= MAX_LOOP_BREAKS) {
           maybeAutoRepair(lastToolErrors, String(userId));
-          return {
+          const result = {
             response:  `⚠️ Bucle detectado: '${toolName}' fue llamada ${consecSameCount} veces con los mismos parámetros.${lastErr ? "\nError: " + lastErr : ""}\n\n${lastErr ? "No puedo continuar: " + lastErr : "Reformula tu solicitud con instrucciones más específicas."}`,
             iterations,
             usedTools: [...new Set(usedTools)],
             provider:  lastProvider,
             warning:   "Bucle consecutivo",
           };
+          logRun(traceId, startTime, userId, result);
+          return result;
         }
 
         messages.push({
@@ -377,13 +474,15 @@ export async function runAgent(
             const errInfo   = allErrors.length > 0
               ? `\nErrores: ${allErrors.map(([n, e]) => `${n}: ${e}`).join("; ")}`
               : "";
-            return {
+            const result = {
               response:  `⚠️ Bucle alternado detectado (${a} ↔ ${b}): las herramientas están en conflicto.${errInfo}\n\nNo puedo resolver esto automáticamente. Verifica la configuración de las herramientas.`,
               iterations,
               usedTools: [...new Set(usedTools)],
               provider:  lastProvider,
               warning:   "Bucle alternado",
             };
+            logRun(traceId, startTime, userId, result);
+            return result;
           }
 
           messages.push({
@@ -433,13 +532,15 @@ export async function runAgent(
           // Error fatal → salir inmediatamente, no tiene sentido reintentar
           if (isFatalError(truncated)) {
             console.warn(`[AGENT] Error fatal en '${toolName}' — saliendo sin reintentar.`);
-            return {
+            const result = {
               response:  truncated,
               iterations,
               usedTools: [...new Set(usedTools)],
               provider:  lastProvider,
               warning:   `Error fatal en '${toolName}'`,
             };
+            logRun(traceId, startTime, userId, result);
+            return result;
           }
 
           // Error persistente → avisar al LLM que no reintente
@@ -460,6 +561,9 @@ export async function runAgent(
           name:         toolName,
           content:      truncated,
         });
+        if (!truncated.startsWith("❌")) {
+          successfulToolCalls++;
+        }
       } catch (err) {
         const errMsg = (err as Error).message;
         lastToolErrors.set(toolName, errMsg);
@@ -479,11 +583,13 @@ export async function runAgent(
 
   console.error(`[AGENT] MAX_ITERATIONS (${MAX_ITERATIONS}) alcanzado`);
   maybeAutoRepair(lastToolErrors, String(userId));
-  return {
+  const result = {
     response:  "⚠️ Límite de iteraciones alcanzado. La tarea es demasiado compleja para un solo paso. Intenta dividirla en partes más pequeñas.",
     iterations,
     usedTools: [...new Set(usedTools)],
     provider:  lastProvider,
     warning:   "MAX_ITERATIONS",
   };
+  logRun(traceId, startTime, userId, result);
+  return result;
 }

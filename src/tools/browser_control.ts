@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Tool } from "../shared/types.js";
+import { sanitizeWebContent } from "../shared/sanitize.js";
 
 // ─── Screenshot store ─────────────────────────────────────────────────────────
 // telegram.ts reads this after runAgent() to send the photo
@@ -169,12 +170,12 @@ async function getText(page: Page, selector?: string): Promise<string> {
   if (selector) {
     const el = page.locator(selector).first();
     const text = await el.textContent({ timeout: 10_000 });
-    return `📄 Texto en "${selector}":\n${text?.trim() ?? "(vacío)"}`;
+    return `📄 Texto en "${selector}":\n${sanitizeWebContent(text?.trim() ?? "(vacío)")}`;
   }
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore: runs in browser context where document exists
   const text = await page.evaluate(() => document.body.innerText as string);
-  return `📄 Texto de la página:\n${text.slice(0, 2000)}`;
+  return `📄 Texto de la página:\n${sanitizeWebContent(text.slice(0, 2000))}`;
 }
 
 async function loginSequence(

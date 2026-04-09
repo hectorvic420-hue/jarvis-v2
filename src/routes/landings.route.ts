@@ -5,7 +5,8 @@ import path from "path";
 import db   from "../memory/db.js";
 import { landingBuilderTool } from "../tools/landing_builder.js";
 
-const LANDINGS_DIR = process.env.LANDINGS_DIR || path.join(process.cwd(), "landings");
+// __dirname apunta a dist/routes en produccion
+const LANDINGS_DIR = process.env.LANDINGS_DIR || path.join(__dirname, "../../landings");
 const router       = Router();
 
 // ─── GET /api/landings — Listar landings ─────────────────────────────────────
@@ -44,7 +45,12 @@ router.get("/api/landings/:slug", (req: Request, res: Response) => {
 
 // ─── GET /wizard — Formulario web ────────────────────────────────────────────
 router.get("/wizard", (_req: Request, res: Response) => {
-  const wizardPath = path.join(process.cwd(), "src", "public", "wizard", "index.html");
+  // __dirname funciona correctamente en codigo compilado (dist/routes)
+  const wizardPath = path.join(__dirname, "../../public/wizard/index.html");
+  if (!fs.existsSync(wizardPath)) {
+    res.status(404).send("<h1>Wizard no disponible</h1>");
+    return;
+  }
   res.sendFile(wizardPath);
 });
 

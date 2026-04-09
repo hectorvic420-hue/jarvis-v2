@@ -8,6 +8,19 @@ const CALENDAR_BASE = "https://www.googleapis.com/calendar/v3";
 const DRIVE_BASE    = "https://www.googleapis.com/drive/v3";
 const DOCS_BASE     = "https://docs.googleapis.com/v1";
 const SHEETS_BASE   = "https://sheets.googleapis.com/v4";
+const FETCH_TIMEOUT = 30000;
+
+// ─── HTTP Helper with timeout ─────────────────────────────────────────────────
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -26,7 +39,7 @@ async function token(): Promise<string> {
     throw new Error("Faltan GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET o GOOGLE_REFRESH_TOKEN");
   }
 
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -52,7 +65,7 @@ async function gGet(url: string, params: Record<string, string> = {}): Promise<A
   const qs = Object.keys(params).length
     ? "?" + new URLSearchParams(params).toString()
     : "";
-  const res = await fetch(`${url}${qs}`, {
+  const res = await fetchWithTimeout(`${url}${qs}`, {
     headers: { Authorization: `Bearer ${await token()}` },
   });
   const data = await res.json() as ApiResponse;
@@ -61,7 +74,7 @@ async function gGet(url: string, params: Record<string, string> = {}): Promise<A
 }
 
 async function gPost(url: string, body: unknown): Promise<ApiResponse> {
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -72,7 +85,7 @@ async function gPost(url: string, body: unknown): Promise<ApiResponse> {
 }
 
 async function gPatch(url: string, body: unknown): Promise<ApiResponse> {
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "PATCH",
     headers: { Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -148,6 +161,19 @@ async function createEvent(
   endDateTime: string,
   description?: string
 ): Promise<string> {
+  const startDate = new Date(startDateTime);
+  const endDate = new Date(endDateTime);
+
+  if (isNaN(startDate.getTime())) {
+    throw new Error("start_datetime inválido. Formato esperado: ISO 8601 (ej: 2025-04-01T10:00:00)");
+  }
+  if (isNaN(endDate.getTime())) {
+    throw new Error("end_datetime inválido. Formato esperado: ISO 8601 (ej: 2025-04-01T11:00:00)");
+  }
+  if (endDate <= startDate) {
+    throw new Error("La fecha de fin debe ser posterior a la fecha de inicio");
+  }
+
   const data = await gPost(`${CALENDAR_BASE}/calendars/primary/events`, {
     summary,
     description,
@@ -215,6 +241,15 @@ async function appendToSheet(
   range: string,
   values: string[][]
 ): Promise<string> {
+  if (!spreadsheetId) throw new Error("spreadsheet_id es requerido");
+  if (!range) throw new Error("range es requerido (ej: Sheet1!A1)");
+  if (!values || !Array.isArray(values) || values.length === 0) {
+    throw new Error("values debe ser un array no vacío de filas [[col1, col2], ...]");
+  }
+  if (!values.every(row => Array.isArray(row))) {
+    throw new Error("values debe ser un array de arrays [[col1, col2], ...]");
+  }
+
   const data = await gPost(
     `${SHEETS_BASE}/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`,
     { values }

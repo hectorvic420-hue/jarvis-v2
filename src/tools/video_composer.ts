@@ -11,6 +11,18 @@ function ensureOutputDir(): void {
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 }
 
+const FETCH_TIMEOUT = 30000;
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 // ─── RunwayML ─────────────────────────────────────────────────────────────────
 
 async function generateRunway(
@@ -30,7 +42,7 @@ async function generateRunway(
   };
   if (imageUrl) body["promptImage"] = imageUrl;
 
-  const res = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
+  const res = await fetchWithTimeout("https://api.dev.runwayml.com/v1/image_to_video", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -44,12 +56,13 @@ async function generateRunway(
   if (!res.ok) throw new Error(data["message"] as string || `RunwayML ${res.status}`);
 
   const taskId = data["id"] as string;
+  if (!taskId) throw new Error("RunwayML no retornó task ID");
 
   // Poll hasta completar (max 120s)
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 3000));
 
-    const poll = await fetch(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
+    const poll = await fetchWithTimeout(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
       headers: {
         Authorization: `Bearer ${key}`,
         "X-Runway-Version": "2024-11-06",
@@ -58,7 +71,10 @@ async function generateRunway(
     const status = await poll.json() as ApiResponse;
 
     if (status["status"] === "SUCCEEDED") {
-      return (status["output"] as string[])?.[0] ?? "Sin URL de salida";
+      const output = status["output"];
+      if (Array.isArray(output) && output[0]) return output[0] as string;
+      if (typeof output === "string" && output) return output;
+      throw new Error("RunwayML completó pero sin URL de salida");
     }
     if (status["status"] === "FAILED") {
       throw new Error(`RunwayML falló: ${status["failure"] as string}`);
@@ -90,7 +106,7 @@ async function generateKling(
     ? "https://api.klingai.com/v1/videos/image2video"
     : "https://api.klingai.com/v1/videos/text2video";
 
-  const res = await fetch(endpoint, {
+  const res = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -103,12 +119,17 @@ async function generateKling(
   if (!res.ok) throw new Error(data["message"] as string || `Kling ${res.status}`);
 
   const taskId = data["data"]?.["task_id"] as string;
+  if (!taskId) throw new Error("Kling no retornó task_id");
+
+  const pollEndpoint = imageUrl
+    ? `https://api.klingai.com/v1/videos/image2video/${taskId}`
+    : `https://api.klingai.com/v1/videos/text2video/${taskId}`;
 
   // Poll (max 120s)
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 3000));
 
-    const poll = await fetch(`https://api.klingai.com/v1/videos/text2video/${taskId}`, {
+    const poll = await fetchWithTimeout(pollEndpoint, {
       headers: { Authorization: `Bearer ${key}` },
     });
     const status = await poll.json() as ApiResponse;
@@ -141,7 +162,7 @@ async function generatePika(
   };
   if (imageUrl) body["image"] = imageUrl;
 
-  const res = await fetch("https://api.pika.art/v1/generate", {
+  const res = await fetchWithTimeout("https://api.pika.art/v1/generate", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -154,17 +175,20 @@ async function generatePika(
   if (!res.ok) throw new Error(data["message"] as string || `Pika ${res.status}`);
 
   const jobId = data["id"] as string;
+  if (!jobId) throw new Error("Pika no retornó job ID");
 
   // Poll (max 90s)
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 3000));
-    const poll = await fetch(`https://api.pika.art/v1/jobs/${jobId}`, {
+    const poll = await fetchWithTimeout(`https://api.pika.art/v1/jobs/${jobId}`, {
       headers: { Authorization: `Bearer ${key}` },
     });
     const status = await poll.json() as ApiResponse;
 
     if (status["status"] === "finished") {
-      return status["resultUrl"] as string ?? "Sin URL";
+      const resultUrl = status["resultUrl"] as string;
+      if (!resultUrl) throw new Error("Pika completó pero sin URL de resultado");
+      return resultUrl;
     }
     if (status["status"] === "failed") {
       throw new Error(`Pika falló: ${status["error"] as string}`);
@@ -177,8 +201,10 @@ async function generatePika(
 
 async function saveVideo(url: string, filename: string): Promise<string> {
   ensureOutputDir();
-  const res  = await fetch(url);
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error(`Error descargando video: ${res.status}`);
   const buf  = Buffer.from(await res.arrayBuffer());
+  if (buf.length === 0) throw new Error("Video descargado está vacío");
   const file = path.join(OUTPUT_DIR, `${filename}.mp4`);
   fs.writeFileSync(file, buf);
   return file;

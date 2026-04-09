@@ -1,8 +1,12 @@
+
+
 import { Tool } from "../shared/types.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const WHAPI_TOKEN   = process.env.WHAPI_TOKEN   || "";
 const WHAPI_API_URL = process.env.WHAPI_API_URL || "https://gate.whapi.cloud";
+const FETCH_TIMEOUT = 30000;
+const MAX_MEDIA_SIZE = 50 * 1024 * 1024; // 50MB
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface WaMessage {
@@ -24,18 +28,25 @@ async function whapiRequest(
 ): Promise<any> {
   if (!WHAPI_TOKEN) throw new Error("Falta WHAPI_TOKEN en .env");
 
-  const res = await fetch(`${WHAPI_API_URL}${path}`, {
-    method,
-    headers: {
-      "Authorization": `Bearer ${WHAPI_TOKEN}`,
-      "Content-Type":  "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    const res = await fetch(`${WHAPI_API_URL}${path}`, {
+      method,
+      headers: {
+        "Authorization": `Bearer ${WHAPI_TOKEN}`,
+        "Content-Type":  "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
 
-  const data = await res.json() as any;
-  if (!res.ok) throw new Error(data?.error?.message || data?.message || `Whapi ${res.status}`);
-  return data;
+    const data = await res.json() as any;
+    if (!res.ok) throw new Error(data?.error?.message || data?.message || `Whapi ${res.status}`);
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ─── Phone helpers ────────────────────────────────────────────────────────────
@@ -112,22 +123,38 @@ export async function downloadMedia(
 ): Promise<{ buffer: Buffer; mimetype: string } | null> {
   if (!messageId) return null;
   try {
-    // Whapi expone la URL del media en el propio payload del webhook.
-    // Si tenemos el message_id podemos obtener el mensaje:
     const msg = await whapiRequest("GET", `/messages/${messageId}`);
     const mediaUrl: string | undefined =
       msg?.audio?.link ?? msg?.image?.link ?? msg?.video?.link ?? msg?.document?.link;
 
     if (!mediaUrl) return null;
 
-    const res = await fetch(mediaUrl, {
-      headers: { "Authorization": `Bearer ${WHAPI_TOKEN}` },
-    });
-    if (!res.ok) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+    try {
+      const res = await fetch(mediaUrl, {
+        headers: { "Authorization": `Bearer ${WHAPI_TOKEN}` },
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
 
-    const buffer   = Buffer.from(await res.arrayBuffer());
-    const mimetype = res.headers.get("content-type") ?? "application/octet-stream";
-    return { buffer, mimetype };
+      const contentLength = res.headers.get("content-length");
+      if (contentLength) {
+        const size = parseInt(contentLength, 10);
+        if (!isNaN(size) && size > MAX_MEDIA_SIZE) {
+          throw new Error(`Archivo demasiado grande: ${(size / 1024 / 1024).toFixed(1)}MB (límite: 50MB)`);
+        }
+      }
+
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length > MAX_MEDIA_SIZE) {
+        throw new Error(`Archivo demasiado grande: ${(buffer.length / 1024 / 1024).toFixed(1)}MB (límite: 50MB)`);
+      }
+      const mimetype = res.headers.get("content-type") ?? "application/octet-stream";
+      return { buffer, mimetype };
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch {
     return null;
   }

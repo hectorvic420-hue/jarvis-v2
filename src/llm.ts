@@ -66,7 +66,7 @@ const OPENROUTER_MODELS = [
 ];
 
 // Claude: modelo principal (requiere crédito)
-const CLAUDE_MODEL = "claude-3-5-sonnet-20241022";
+const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 // Gemini directo: API gratuita con límites
 const GEMINI_MODEL = "gemini-2.0-flash";
@@ -106,7 +106,6 @@ async function retryWithBackoff<T>(
       const shouldRetry =
         attempt < maxRetries &&
         (
-          err?.message?.includes("429") ||
           err?.message?.includes("429") ||
           err?.message?.includes("rate_limit") ||
           err?.message?.includes("timeout") ||
@@ -250,7 +249,7 @@ async function callGroq(
       const params = {
         model:       modelName,
         messages:    messages as ChatCompletionMessageParam[],
-        temperature: 0.7,
+        temperature: 0.1,
         max_tokens:  4096,
         stream:      false as const,
         ...(tools && tools.length > 0
@@ -327,7 +326,7 @@ async function callOpenRouter(
       const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
         model:       modelName,
         messages:    messages as OpenAI.Chat.ChatCompletionMessageParam[],
-        temperature: 0.7,
+        temperature: 0.1,
         max_tokens:  4096,
         ...(tools && tools.length > 0
           ? {
@@ -452,7 +451,7 @@ async function callGemini(
     "Gemini"
   );
 
-  const responseText = result.response.text();
+  const responseText = result.response.text?.() || null;
   const functionCalls = result.response.candidates?.[0]?.content?.parts?.filter(p => p.functionCall);
   
   const toolCalls: ToolCall[] | undefined = functionCalls?.map((fc, idx) => ({
@@ -476,10 +475,10 @@ async function callGemini(
 
 /**
  * Cadena de fallback inteligente:
- * 1. Groq (modelos gratuitos con tool calling) - PRÁCTICAMENTE GRATIS
- * 2. OpenRouter (modelos variados, algunos con trial credits)
- * 3. Gemini (API gratuita con límites generosos)
- * 4. Claude (como último recurso, requiere crédito)
+ * 1. Claude (mejor calidad, requiere crédito)
+ * 2. Groq (modelos gratuitos con tool calling)
+ * 3. OpenRouter (modelos variados)
+ * 4. Gemini (API gratuita)
  */
 export async function callLLM(
   messages: LLMMessage[],
@@ -487,24 +486,24 @@ export async function callLLM(
 ): Promise<LLMResponse> {
   const providers = [];
 
-  // 1. Groq: siempre primero (modelos gratuitos)
+  // 1. Claude: prioridad principal (mejor calidad)
+  if (process.env.ANTHROPIC_API_KEY) {
+    providers.push({ name: "Claude", fn: () => callClaude(messages, tools) });
+  }
+
+  // 2. Groq: fallback gratuito
   if (process.env.GROQ_API_KEY) {
     providers.push({ name: "Groq", fn: () => callGroq(messages, tools) });
   }
 
-  // 2. OpenRouter: modelos variados
+  // 3. OpenRouter: modelos variados
   if (process.env.OPENROUTER_API_KEY) {
     providers.push({ name: "OpenRouter", fn: () => callOpenRouter(messages, tools) });
   }
 
-  // 3. Gemini: API gratuita (puede no tener credit pero tiene tier gratuito)
+  // 4. Gemini: API gratuita
   if (process.env.GOOGLE_API_KEY) {
     providers.push({ name: "Gemini", fn: () => callGemini(messages, tools) });
-  }
-
-  // 4. Claude: último recurso (requiere crédito)
-  if (process.env.ANTHROPIC_API_KEY) {
-    providers.push({ name: "Claude", fn: () => callClaude(messages, tools) });
   }
 
   if (providers.length === 0) {

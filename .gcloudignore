@@ -1,0 +1,15 @@
+# Ignorar estos archivos en Cloud Build
+node_modules
+.git
+.gitignore
+dist
+.env
+.env.local
+*.log
+*.md
+scripts
+server
+tests
+coverage
+.DS_Store
+Thumbs.db

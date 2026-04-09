@@ -87,6 +87,23 @@ db.exec(`
     error_summary TEXT,
     fix_summary   TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT UNIQUE,
+    user_id TEXT NOT NULL,
+    input_preview TEXT,
+    iterations INTEGER DEFAULT 0,
+    tools_used TEXT DEFAULT '[]',
+    provider TEXT,
+    status TEXT DEFAULT 'unknown',
+    warning TEXT,
+    duration_ms INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs(user_id);
+  CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
 `);
 
 // ─── Graceful Shutdown ─────────────────────────────────────────────────────────

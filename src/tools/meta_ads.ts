@@ -4,6 +4,19 @@ import { Tool } from "../shared/types.js";
 type ApiResponse = Record<string, any>;
 
 const GRAPH_BASE = "https://graph.facebook.com/v19.0";
+const FETCH_TIMEOUT = 30000;
+
+// ─── HTTP Helper with timeout ─────────────────────────────────────────────────
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
@@ -15,14 +28,14 @@ function token(): string {
 
 async function adsGet(endpoint: string, params: Record<string, string> = {}): Promise<ApiResponse> {
   const qs = new URLSearchParams({ ...params, access_token: token() }).toString();
-  const res = await fetch(`${GRAPH_BASE}${endpoint}?${qs}`);
+  const res = await fetchWithTimeout(`${GRAPH_BASE}${endpoint}?${qs}`);
   const data = await res.json() as ApiResponse;
   if (!res.ok || data["error"]) throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Ads API error ${res.status}`);
   return data;
 }
 
 async function adsPost(endpoint: string, body: Record<string, unknown>): Promise<ApiResponse> {
-  const res = await fetch(`${GRAPH_BASE}${endpoint}`, {
+  const res = await fetchWithTimeout(`${GRAPH_BASE}${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...body, access_token: token() }),
@@ -34,7 +47,7 @@ async function adsPost(endpoint: string, body: Record<string, unknown>): Promise
 
 async function adsDelete(endpoint: string): Promise<ApiResponse> {
   const qs = new URLSearchParams({ access_token: token() }).toString();
-  const res = await fetch(`${GRAPH_BASE}${endpoint}?${qs}`, { method: "DELETE" });
+  const res = await fetchWithTimeout(`${GRAPH_BASE}${endpoint}?${qs}`, { method: "DELETE" });
   const data = await res.json() as ApiResponse;
   if (!res.ok || data["error"]) throw new Error((data["error"] as ApiResponse)?.["message"] as string || `Ads API error ${res.status}`);
   return data;
@@ -102,11 +115,15 @@ async function createCampaign(
   dailyBudget: number,
   status = "PAUSED"
 ): Promise<string> {
+  if (!dailyBudget || dailyBudget < 1) {
+    throw new Error("El presupuesto diario debe ser al menos $1 USD");
+  }
+
   const adAccountId = await getAdAccountId();
   const data = await adsPost(`/${adAccountId}/campaigns`, {
     name,
     objective: objective.toUpperCase(),
-    daily_budget: Math.round(dailyBudget * 100).toString(), // en centavos
+    daily_budget: Math.round(dailyBudget * 100).toString(),
     status,
     special_ad_categories: [],
   });
@@ -117,6 +134,9 @@ async function updateCampaignBudget(
   campaignId: string,
   dailyBudget: number
 ): Promise<string> {
+  if (!dailyBudget || dailyBudget < 1) {
+    throw new Error("El presupuesto diario debe ser al menos $1 USD");
+  }
   await adsPost(`/${campaignId}`, {
     daily_budget: Math.round(dailyBudget * 100).toString(),
   });

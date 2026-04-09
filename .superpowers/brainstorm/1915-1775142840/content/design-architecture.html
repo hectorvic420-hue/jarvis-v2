@@ -1,0 +1,107 @@
+<h2>Diseño del Landing Builder de Jarvis</h2>
+<p class="subtitle">Revisa la arquitectura completa — dime si algo no te convence antes de implementar</p>
+
+<div class="section">
+  <h3>🧠 Flujo completo</h3>
+  <div class="mockup">
+    <div class="mockup-header">Usuario → Jarvis → Landing publicada en internet</div>
+    <div class="mockup-body" style="font-family:monospace;font-size:13px;line-height:2;">
+      <div style="color:#00d4ff;">1. Usuario pide landing</div>
+      <div style="padding-left:20px;color:#aaa;">"Crea una landing para mi curso de Marketing Digital, $197, Hotmart"</div>
+      <div style="padding-left:20px;color:#aaa;">O: { title, description, style, checkout_url, ... }</div>
+      <br>
+      <div style="color:#00d4ff;">2. landing_builder tool (Jarvis)</div>
+      <div style="padding-left:20px;color:#aaa;">• Parsea el prompt libre con Claude</div>
+      <div style="padding-left:20px;color:#aaa;">• Determina: título, estilo, secciones, checkout_url</div>
+      <div style="padding-left:20px;color:#aaa;">• Llama a Claude con LANDING_EXPERT_PROMPT</div>
+      <br>
+      <div style="color:#00d4ff;">3. Claude genera HTML experto</div>
+      <div style="padding-left:20px;color:#aaa;">• HTML/CSS/JS en un solo archivo autocontenido</div>
+      <div style="padding-left:20px;color:#aaa;">• Todas las secciones de la opción C</div>
+      <div style="padding-left:20px;color:#aaa;">• Estilo elegido (futurista / premium / energético / etc.)</div>
+      <br>
+      <div style="color:#00d4ff;">4. Publish al servidor GCP</div>
+      <div style="padding-left:20px;color:#aaa;">• Guarda en /opt/jarvis/landings/[slug].html</div>
+      <div style="padding-left:20px;color:#aaa;">• Express sirve la carpeta en /l/[slug]</div>
+      <div style="padding-left:20px;color:#aaa;">• Retorna URL pública: https://tudominio.com/l/curso-marketing</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>📁 Archivos nuevos</h3>
+  <div class="mockup">
+    <div class="mockup-header">Estructura de archivos</div>
+    <div class="mockup-body" style="font-family:monospace;font-size:13px;line-height:1.8;">
+      <div>src/tools/<span style="color:#00d4ff;">landing_builder.ts</span> &nbsp;← Tool principal</div>
+      <div>src/tools/<span style="color:#00d4ff;">landing_prompts.ts</span> &nbsp;← LANDING_EXPERT_PROMPT + estilos</div>
+      <div>src/routes/<span style="color:#00d4ff;">landings.route.ts</span> &nbsp;← Sirve archivos HTML estáticos</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🎨 Estilos disponibles (todos)</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+    <div style="background:#0a0a0f;border:1px solid #00d4ff33;border-radius:8px;padding:12px;">
+      <div style="color:#00d4ff;font-size:11px;font-weight:700;margin-bottom:4px;">FUTURISTA</div>
+      <div style="color:#aaa;font-size:11px;">Dark, neón, glows, grid</div>
+    </div>
+    <div style="background:#fafaf8;border:1px solid #b89a5a33;border-radius:8px;padding:12px;">
+      <div style="color:#b89a5a;font-size:11px;font-weight:700;margin-bottom:4px;">PREMIUM</div>
+      <div style="color:#666;font-size:11px;">Blanco, oro, serif</div>
+    </div>
+    <div style="background:linear-gradient(135deg,#ff450020,#ffd70020);border:1px solid #ff450033;border-radius:8px;padding:12px;">
+      <div style="color:#ff4500;font-size:11px;font-weight:700;margin-bottom:4px;">ENERGÉTICO</div>
+      <div style="color:#666;font-size:11px;">Naranja, urgencia</div>
+    </div>
+    <div style="background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid #7b2ff733;border-radius:8px;padding:12px;">
+      <div style="color:#7b2ff7;font-size:11px;font-weight:700;margin-bottom:4px;">CORPORATIVO</div>
+      <div style="color:#aaa;font-size:11px;">Azul marino, confianza</div>
+    </div>
+    <div style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #2ea04333;border-radius:8px;padding:12px;">
+      <div style="color:#2ea043;font-size:11px;font-weight:700;margin-bottom:4px;">NATURAL</div>
+      <div style="color:#aaa;font-size:11px;">Verde, orgánico, salud</div>
+    </div>
+    <div style="background:linear-gradient(135deg,#1a0533,#2d0a5e);border:1px solid #e040fb33;border-radius:8px;padding:12px;">
+      <div style="color:#e040fb;font-size:11px;font-weight:700;margin-bottom:4px;">BOLD</div>
+      <div style="color:#aaa;font-size:11px;">Morado, impacto máximo</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>📋 Secciones que genera Claude (siempre)</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Hero con headline + subheadline</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Video embed (YouTube/Vimeo)</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Beneficios (iconos + texto)</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Módulos / Temario</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Sobre el Autor</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Testimonios</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ FAQ accordion</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Garantía</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Countdown timer JS</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Múltiples CTA botones</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Pixel de Meta</div>
+    <div style="background:#1a1a2e;border-radius:6px;padding:10px;color:#aaa;">✅ Google Analytics</div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>⚙️ Parámetros de la tool</h3>
+  <div class="mockup">
+    <div class="mockup-header">Qué le puedes pedir a Jarvis</div>
+    <div class="mockup-body" style="font-family:monospace;font-size:12px;color:#aaa;line-height:1.8;">
+      <span style="color:#00d4ff;">action:</span> create_landing | list_landings | delete_landing<br>
+      <span style="color:#00d4ff;">prompt:</span> "Crea una landing para mi curso de IA para emprendedores"<br>
+      <span style="color:#00d4ff;">style:</span> futuristic | premium | energetic | corporate | natural | bold | auto<br>
+      <span style="color:#00d4ff;">checkout_url:</span> https://pay.hotmart.com/XXX (cualquier URL)<br>
+      <span style="color:#00d4ff;">pixel_id:</span> Meta Pixel ID (opcional)<br>
+      <span style="color:#00d4ff;">ga_id:</span> Google Analytics ID (opcional)<br>
+      <span style="color:#00d4ff;">countdown_hours:</span> 24 (optional urgency timer)
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">¿Este diseño te parece bien? Responde en el chat para continuar.</p>

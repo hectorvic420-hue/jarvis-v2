@@ -1,0 +1,24 @@
+[Unit]
+Description=JARVIS v2 - David Academy AI Agent
+Documentation=https://github.com/david/jarvis-v2
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/jarvis
+ExecStart=/usr/bin/node /opt/jarvis/dist/index.js
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/jarvis/logs/jarvis.log
+StandardError=append:/opt/jarvis/logs/jarvis-error.log
+Environment=NODE_ENV=production
+Environment=PORT=8080
+
+# Límites
+LimitNOFILE=65536
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 // src/bot/media_processor.ts
-import { PDFParse } from "pdf-parse";
+import * as pdfParse from "pdf-parse";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import path from "path";
@@ -56,10 +56,8 @@ export async function processMediaBuffer(
   // ── PDF ───────────────────────────────────────────────────────────────────
   if (ext === "pdf") {
     try {
-      const parser = new PDFParse({ data: buffer });
-      const textResult = await parser.getText();
+      const textResult = await (pdfParse as any)(buffer);
       const text = textResult.text.trim();
-      await parser.destroy();
       if (!text) {
         return {
           type: "document",

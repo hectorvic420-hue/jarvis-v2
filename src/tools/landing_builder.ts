@@ -8,6 +8,17 @@ import path from "path";
 import crypto from "crypto";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const ANTHROPIC_TIMEOUT = 60000;
+
+function anthropicWithTimeout<T>(promise: Promise<T>, timeoutMs = ANTHROPIC_TIMEOUT): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const p = promise.finally(() => clearTimeout(timer));
+  return new Promise((resolve, reject) => {
+    p.then(resolve).catch(reject);
+    timer.unref?.();
+  });
+}
 
 const LANDINGS_DIR = process.env.LANDINGS_DIR || path.join(process.cwd(), "landings");
 const PUBLIC_URL   = (process.env.PUBLIC_URL || "http://localhost:8080").replace(/\/$/, "");
@@ -64,7 +75,7 @@ COUNTDOWN TIMER: ${params.countdown_hours > 0 ? `${params.countdown_hours} horas
 Genera el HTML completo ahora.
 `;
 
-  const response = await client.messages.create({
+  const response = await anthropicWithTimeout(client.messages.create({
     model:      "claude-opus-4-6",
     max_tokens: 8000,
     messages: [
@@ -78,16 +89,28 @@ Genera el HTML completo ahora.
       video_url:       params.video_url,
       countdown_hours: params.countdown_hours,
     }),
-  });
+  }), 60000);
 
   const text = response.content
     .filter(b => b.type === "text")
     .map(b => (b as any).text as string)
     .join("");
 
-  // Extraer solo el HTML (Claude puede agregar texto antes/después)
-  const htmlMatch = text.match(/<!DOCTYPE html>[\s\S]*/i);
-  return htmlMatch ? htmlMatch[0] : text;
+  if (!text || text.trim().length === 0) {
+    throw new Error("Claude no retornó contenido HTML");
+  }
+
+  const htmlMatch = text.match(/<!DOCTYPE html>[\s\S]*?<\/html>/i);
+  if (htmlMatch) return htmlMatch[0];
+
+  const bodyMatch = text.match(/<html[\s\S]*?<\/html>/i);
+  if (bodyMatch) return bodyMatch[0];
+
+  if (text.includes("<html") || text.includes("<!DOCTYPE")) {
+    return text;
+  }
+
+  throw new Error("Claude no generó HTML válido. Intenta de nuevo.");
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -108,11 +131,11 @@ async function createLanding(params: Record<string, any>): Promise<string> {
   let style = (params.style as string) || "auto";
   if (style === "auto") {
     // Pedir a Claude que elija el estilo
-    const styleResponse = await client.messages.create({
+    const styleResponse = await anthropicWithTimeout(client.messages.create({
       model:      "claude-haiku-4-5-20251001",
       max_tokens: 50,
       messages: [{ role: "user", content: `Basado en este producto: "${prompt}"\n\n${AUTO_STYLE_RULES}\n\nResponde SOLO con el ID del estilo (futuristic, premium, energetic, corporate, natural o bold):` }],
-    });
+    }));
     const chosen = extractText(styleResponse.content)?.trim().toLowerCase() ?? "futuristic";
     style = Object.keys(LANDING_STYLES).includes(chosen) ? chosen : "futuristic";
   }
@@ -120,11 +143,11 @@ async function createLanding(params: Record<string, any>): Promise<string> {
   ensureLandingsDir();
 
   // Extraer título del prompt para el slug
-  const titleResponse = await client.messages.create({
+  const titleResponse = await anthropicWithTimeout(client.messages.create({
     model:      "claude-haiku-4-5-20251001",
     max_tokens: 30,
     messages: [{ role: "user", content: `Extrae el nombre del curso/producto de este texto en máximo 5 palabras: "${prompt}". Responde solo el nombre, sin puntuación.` }],
-  });
+  }), 30000);
   const title = extractText(titleResponse.content)?.trim() ?? "landing";
 
   const slug     = generateSlug(title);

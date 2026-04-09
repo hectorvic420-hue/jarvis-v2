@@ -12,6 +12,7 @@ import { whatsappTool }          from "./whatsapp.js";
 import { landingBuilderTool }    from "./landing_builder.js";
 import { browserControlTool }    from "./browser_control.js";
 import { selfRepairTool }        from "./self_repair.js";
+import { developerTool }        from "./developer.js";
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ export const tools: Record<string, Tool> = {
   [landingBuilderTool.name]:    landingBuilderTool,
   [browserControlTool.name]:    browserControlTool,
   [selfRepairTool.name]:        selfRepairTool,
+  [developerTool.name]:         developerTool,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -83,10 +85,11 @@ export const SYSTEM_PROMPT =
 
   `### facebook_publisher\n` +
   `Úsala para CUALQUIER cosa relacionada con Facebook:\n` +
-  `- Publicar texto, imágenes o videos en una página\n` +
+  `- Publicar texto, imágenes o videos en una página (SOLO en horarios autorizados: 6am, 9am, 12pm, 3pm, 6pm)\n` +
   `- Programar publicaciones\n` +
   `- Ver métricas, alcance, engagement de posts\n` +
   `- Eliminar publicaciones\n` +
+  `⚠️ IMPORTANTE: NO pubiques fuera de los horarios autorizados sin aprobación del usuario.\n` +
   `Palabras clave del usuario: "publica", "postea", "sube a Facebook", "programa en FB", "métricas de Facebook", "insights"\n\n` +
 
   `### meta_ads\n` +

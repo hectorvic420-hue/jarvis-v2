@@ -1,4 +1,5 @@
 import db from "./db.js";
+import { callLLM, LLMMessage } from "../llm.js";
 
 // ─── Fix 4: Timezone from environment variable ────────────────────────────────
 const TIMEZONE = process.env.TIMEZONE ?? "America/Bogota";
@@ -168,6 +169,40 @@ function clearFacts(userId: string | number): void {
   stmts.clearFacts.run(String(userId));
 }
 
+async function extractAndSaveFacts(userId: string, conversation: Message[]): Promise<void> {
+  if (conversation.length < 4) return;
+
+  const recent = conversation.slice(-6);
+  const conversationText = recent.map((m) => `${m.role}: ${m.content}`).join("\n\n");
+
+  const messages: LLMMessage[] = [
+    { role: "system", content: "Eres un asistente que extrae datos estructurados." },
+    { role: "user", content: `Analiza esta conversación y extrae hechos permanentes sobre el usuario o su negocio. Solo hechos que sean útiles en futuras conversaciones (nombre, producto, preferencias, configuraciones).\n\nConversación:\n${conversationText}\n\nResponde en JSON: [{"key": "...", "value": "..."}] Si no hay hechos nuevos, responde: []` },
+  ];
+
+  try {
+    const response = await callLLM(messages);
+    const content = response.content ?? "[]";
+
+    let facts: { key: string; value: string }[];
+    try {
+      facts = JSON.parse(content);
+    } catch {
+      return;
+    }
+
+    if (!Array.isArray(facts)) return;
+
+    for (const fact of facts) {
+      if (fact.key && fact.value) {
+        upsertFact(userId, fact.key, fact.value, 0.8, "conversation");
+      }
+    }
+  } catch {
+    // Best-effort, ignore errors
+  }
+}
+
 // ─── Task operations ──────────────────────────────────────────────────────────
 function saveTask(userId: string | number, title: string, description?: string, priority = 2, dueAt?: string): number {
   const result = stmts.insertTask.run(String(userId), title, description ?? null, priority, dueAt ?? null);
@@ -246,6 +281,9 @@ export const memoryService = {
   // Context
   getContext,
   formatContextForPrompt,
+
+  // Facts extraction
+  extractAndSaveFacts,
 
   // Misc
   auditLog,

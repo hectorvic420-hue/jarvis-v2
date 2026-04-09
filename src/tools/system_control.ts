@@ -7,23 +7,52 @@ const execAsync = promisify(exec);
 const MAX_OUTPUT_CHARS = 3000;
 const CMD_TIMEOUT_MS = 30000;
 
+const DANGEROUS_PATTERNS = [
+  /rm\s+-rf/i,
+  /curl\s+\|\s*bash/i,
+  /wget\s+\|\s*sh/i,
+  /chmod\s+777/i,
+  /\>\s*\/etc/i,
+  /dd\s+if=/i,
+  /mkfs/i,
+  /:\(\)\s*\{.*:\|:&.*\}/i,
+  /base64\s+-d\s*\|\s*bash/i,
+];
+
+function validateCommand(cmd: string): boolean {
+  const lower = cmd.toLowerCase();
+  
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(lower)) {
+      return false;
+    }
+  }
+
+  if (/\|\s*(bash|sh|zsh|exec)/i.test(lower)) {
+    return false;
+  }
+
+  return true;
+}
+
 const ALLOWED_COMMANDS: RegExp[] = [
-  /^ls(\s|$)/,
+  /^ls(\s+[-\w./]+)*$/,
   /^cat\s+[\w./-]+$/,
   /^pwd$/,
-  /^echo\s/,
-  /^df(\s|$)/,
-  /^free(\s|$)/,
+  /^echo\s+["'][^"']*["']$/,
+  /^echo\s+[^\s;|`$]+$/,
+  /^df\s*$/,
+  /^free\s*$/,
   /^uptime$/,
   /^whoami$/,
-  /^uname(\s|$)/,
-  /^ps(\s|$)/,
-  /^top\s-bn1$/,
-  /^pm2\s+(list|status|logs|restart|stop|start|reload)(\s|$)/,
+  /^uname(\s+-[a-z]+)?$/,
+  /^ps(\s+-[efww]+)*$/,
+  /^top\s+-bn1$/,
+  /^pm2\s+(list|status|logs|restart|stop|start|reload|monit)(\s+[\w-]+)*$/,
   /^node\s+--version$/,
-  /^npm\s+(list|outdated|audit)(\s|$)/,
-  /^git\s+(status|log|diff|branch)(\s|$)/,
-  /^curl\s+--max-time\s+\d+\s+https?:\/\//,
+  /^npm\s+(list|outdated|audit|run)(\s+[\w-]+)*$/,
+  /^git\s+(status|log|diff|branch|remote)(\s+[-a-z]+)*$/,
+  /^curl\s+--max-time\s+\d+\s+https?:\/\/[^\s;|`$]+$/,
 ];
 
 function isCommandAllowed(cmd: string): boolean {
@@ -31,6 +60,10 @@ function isCommandAllowed(cmd: string): boolean {
 }
 
 export async function runCommand(command: string): Promise<string> {
+  if (!validateCommand(command)) {
+    return "❌ Comando bloqueado por seguridad. Solo se permiten comandos de lectura y diagnóstico.";
+  }
+
   if (!isCommandAllowed(command)) {
     return `⚠️ Comando no permitido: "${command}"\nComandos permitidos: ls, cat, pwd, echo, df, free, uptime, whoami, pm2, git, npm.`;
   }
@@ -44,8 +77,9 @@ export async function runCommand(command: string): Promise<string> {
     return output.length > MAX_OUTPUT_CHARS
       ? output.slice(0, MAX_OUTPUT_CHARS) + "\n...[truncado]"
       : output || "(sin salida)";
-  } catch (err: any) {
-    return `❌ Error ejecutando comando: ${err.message}`;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err ?? "error desconocido");
+    return `❌ Error ejecutando comando: ${msg}`;
   }
 }
 

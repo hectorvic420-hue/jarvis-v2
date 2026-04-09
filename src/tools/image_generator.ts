@@ -6,11 +6,22 @@ import path from "path";
 type ApiResponse = Record<string, any>;
 
 const OUTPUT_DIR = process.env.IMAGE_OUTPUT_DIR || "./output/images";
+const FETCH_TIMEOUT = 60000;
 
 // ─── Ensure output dir ────────────────────────────────────────────────────────
 
 function ensureOutputDir(): void {
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+}
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ─── Providers ────────────────────────────────────────────────────────────────
@@ -26,7 +37,7 @@ async function generateTogetherAI(
   const key = process.env.TOGETHER_API_KEY;
   if (!key) throw new Error("TOGETHER_API_KEY no configurado");
 
-  const res = await fetch("https://api.together.xyz/v1/images/generations", {
+  const res = await fetchWithTimeout("https://api.together.xyz/v1/images/generations", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -44,7 +55,10 @@ async function generateTogetherAI(
   });
 
   const data = await res.json() as ApiResponse;
-  if (!res.ok) throw new Error(data["error"]?.["message"] as string || `Together AI ${res.status}`);
+  if (!res.ok) {
+    const errMsg = data?.error?.message || data?.error?.error || `Together AI ${res.status}`;
+    throw new Error(errMsg);
+  }
 
   const imageUrl = data["data"]?.[0]?.["url"] as string;
   if (!imageUrl) throw new Error("Together AI no retornó URL de imagen");
@@ -62,7 +76,7 @@ async function generateFalAI(
   const key = process.env.FAL_API_KEY;
   if (!key) throw new Error("FAL_API_KEY no configurado");
 
-  const res = await fetch(`https://fal.run/${model}`, {
+  const res = await fetchWithTimeout(`https://fal.run/${model}`, {
     method: "POST",
     headers: {
       Authorization: `Key ${key}`,
@@ -87,7 +101,7 @@ async function generateFalAI(
 
 async function generateReplicate(
   prompt:         string,
-  model:          string,
+  model:         string,
   width:          number,
   height:         number,
   steps:          number,
@@ -96,8 +110,7 @@ async function generateReplicate(
   const key = process.env.REPLICATE_API_KEY;
   if (!key) throw new Error("REPLICATE_API_KEY no configurado");
 
-  // Crear predicción
-  const res = await fetch("https://api.replicate.com/v1/predictions", {
+  const res = await fetchWithTimeout("https://api.replicate.com/v1/predictions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -118,18 +131,21 @@ async function generateReplicate(
   const prediction = await res.json() as ApiResponse;
   if (!res.ok) throw new Error(prediction["detail"] as string || `Replicate ${res.status}`);
 
-  // Poll hasta completar (max 60s)
   const pollUrl = prediction["urls"]?.["get"] as string;
+  if (!pollUrl) throw new Error("Replicate no retornó URL de poll");
+
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 2000));
-    const poll = await fetch(pollUrl, {
+    const poll = await fetchWithTimeout(pollUrl, {
       headers: { Authorization: `Bearer ${key}` },
     });
     const status = await poll.json() as ApiResponse;
 
     if (status["status"] === "succeeded") {
-      const output = status["output"] as string[] | string;
-      return Array.isArray(output) ? output[0] : output;
+      const output = status["output"];
+      if (Array.isArray(output) && output[0]) return output[0] as string;
+      if (typeof output === "string" && output) return output;
+      throw new Error("Replicate completó pero sin URL de imagen");
     }
     if (status["status"] === "failed") {
       throw new Error(`Replicate falló: ${status["error"] as string}`);
@@ -142,9 +158,11 @@ async function generateReplicate(
 
 async function saveImage(url: string, filename: string): Promise<string> {
   ensureOutputDir();
-  const res  = await fetch(url);
-  const buf  = Buffer.from(await res.arrayBuffer());
-  const ext  = url.includes(".png") ? "png" : "jpg";
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error(`Error descargando imagen: ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length === 0) throw new Error("Imagen descargada está vacía");
+  const ext = url.includes(".png") ? "png" : "jpg";
   const file = path.join(OUTPUT_DIR, `${filename}.${ext}`);
   fs.writeFileSync(file, buf);
   return file;

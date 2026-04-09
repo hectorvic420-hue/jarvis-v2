@@ -10,6 +10,18 @@ import {
 import { processMediaBuffer } from "./media_processor.js";
 import { screenshotStore } from "../tools/browser_control.js";
 
+// ─── Rate Limiter ───────────────────────────────────────────────────────────────
+
+const userRateLimit = new Map<string, number>();
+const RATE_LIMIT_MS = 4000;
+
+setInterval(() => {
+  const cutoff = Date.now() - 60_000;
+  for (const [k, v] of userRateLimit.entries()) {
+    if (v < cutoff) userRateLimit.delete(k);
+  }
+}, 60_000);
+
 // ─── Session ──────────────────────────────────────────────────────────────────
 
 interface PendingAction {
@@ -335,6 +347,14 @@ export function createTelegramBot(): Bot<BotCtx> {
     // ─── Normal Agent Flow ───────────────────────────────────────────────────
     const tools  = Object.values(toolRegistry);
 
+    const chatIdStr = String(ctx.chat.id);
+    const lastTime = userRateLimit.get(chatIdStr) ?? 0;
+    if (Date.now() - lastTime < RATE_LIMIT_MS) {
+      await ctx.reply("⏳ Procesando tu solicitud anterior...");
+      return;
+    }
+    userRateLimit.set(chatIdStr, Date.now());
+
     memoryService.addMessage(userId, "user", text, "telegram");
 
     const processingMsg = await ctx.reply("⏳ Procesando...");
@@ -349,6 +369,9 @@ export function createTelegramBot(): Bot<BotCtx> {
       await tryDelete(ctx, processingMsg.message_id);
 
       memoryService.addMessage(userId, "assistant", result.response, "telegram");
+
+      const conversation = memoryService.getMessages(userId, 10);
+      memoryService.extractAndSaveFacts(String(userId), conversation).catch(() => {});
 
       const response = result.warning
         ? `${result.warning}\n\n${result.response}`
@@ -401,7 +424,8 @@ export function createTelegramBot(): Bot<BotCtx> {
 
       await tryDelete(ctx, processingMsg.message_id);
       memoryService.addMessage(userId, "assistant", result.response, "telegram");
-      await sendLong(ctx, result.response);
+      const conversation = memoryService.getMessages(userId, 10);
+      memoryService.extractAndSaveFacts(String(userId), conversation).catch(() => {});
     } catch (err) {
       await tryDelete(ctx, processingMsg.message_id);
       await ctx.reply(`❌ Error analizando imagen: ${(err as Error).message}`);
@@ -443,6 +467,8 @@ export function createTelegramBot(): Bot<BotCtx> {
 
       await tryDelete(ctx, processingMsg.message_id);
       memoryService.addMessage(userId, "assistant", result.response, "telegram");
+      const conversation = memoryService.getMessages(userId, 10);
+      memoryService.extractAndSaveFacts(String(userId), conversation).catch(() => {});
       await sendLong(ctx, result.response);
     } catch (err) {
       await tryDelete(ctx, processingMsg.message_id);

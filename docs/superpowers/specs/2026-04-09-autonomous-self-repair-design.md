@@ -1,3 +1,4 @@
+
 # Spec: Autonomous Self-Repair v2 — Jarvis V2
 
 **Date:** 2026-04-09  

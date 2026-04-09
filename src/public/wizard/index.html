@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Landing Builder — David Academy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+      --accent: #00d4ff; --accent2: #7b2ff7; --gold: #b89a5a;
+      --text: #f0f0f5; --muted: #8888a0;
+      --success: #22c55e; --error: #ef4444;
+      --radius: 12px; --shadow: 0 8px 32px rgba(0,0,0,.4);
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 720px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      font-weight: 900;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+    }
+
+    header p { color: var(--muted); font-size: 0.95rem; }
+
+    .progress-bar {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 2rem;
+    }
+
+    .progress-step {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      transition: background 0.3s;
+    }
+
+    .progress-step.active { background: var(--accent); }
+    .progress-step.done { background: var(--accent2); }
+
+    .step-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .step-panel.active { display: block; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .step-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+
+    .step-subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+
+    /* Product type cards */
+    .type-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
+    }
+
+    @media (max-width: 480px) { .type-grid { grid-template-columns: 1fr; } }
+
+    .type-card {
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .type-card:hover { border-color: var(--accent); }
+    .type-card.selected { border-color: var(--accent); background: rgba(0,212,255,.08); }
+
+    .type-icon { font-size: 2rem; }
+    .type-label { font-weight: 600; font-size: 0.95rem; }
+
+    /* Form fields */
+    .field { margin-bottom: 1.25rem; }
+
+    .field label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+
+    .field input, .field textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.95rem;
+      padding: 0.75rem 1rem;
+      transition: border-color 0.2s;
+    }
+
+    .field input:focus, .field textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .field textarea { resize: vertical; min-height: 80px; }
+    .field .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
+
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 480px) { .field-row { grid-template-columns: 1fr; } }
+
+    /* Style cards */
+    .style-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+    }
+
+    @media (max-width: 480px) { .style-grid { grid-template-columns: repeat(2, 1fr); } }
+
+    .style-card {
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 0.75rem;
+      cursor: pointer;
+      text-align: center;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .style-card:hover { border-color: var(--accent); }
+    .style-card.selected { border-color: var(--accent); background: rgba(0,212,255,.08); }
+
+    .style-emoji { font-size: 1.75rem; margin-bottom: 0.4rem; }
+    .style-name { font-weight: 600; font-size: 0.8rem; }
+
+    /* Checkbox extras */
+    .extra-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      user-select: none;
+    }
+
+    .extra-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+    .extras-panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      display: none;
+    }
+
+    .extras-panel.visible { display: block; }
+
+    /* Buttons */
+    .btn-row {
+      display: flex;
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 0.875rem 1.5rem;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+
+    .btn:active { transform: scale(0.98); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+    }
+
+    .btn-primary:hover { opacity: 0.9; }
+
+    .btn-secondary {
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover { opacity: 0.8; }
+
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Result */
+    .result-panel {
+      display: none;
+      text-align: center;
+      animation: fadeIn 0.4s ease;
+    }
+
+    .result-panel.active { display: block; }
+
+    .result-url {
+      background: var(--bg);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 1rem;
+      margin: 1.5rem 0;
+      word-break: break-all;
+      font-size: 0.9rem;
+    }
+
+    .result-url a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .result-url a:hover { text-decoration: underline; }
+
+    .result-success {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Loading spinner */
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 0.5rem;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15,17,23,.85);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .loading-overlay.active { display: flex; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Landing Builder</h1>
+      <p>Crea tu página de ventas en minutos</p>
+    </header>
+
+    <div class="progress-bar" id="progressBar">
+      <div class="progress-step active" data-step="1"></div>
+      <div class="progress-step" data-step="2"></div>
+      <div class="progress-step" data-step="3"></div>
+      <div class="progress-step" data-step="4"></div>
+      <div class="progress-step" data-step="5"></div>
+    </div>
+
+    <!-- STEP 1: Product type -->
+    <div class="step-panel active" data-step="1">
+      <div class="step-title">¿Qué quieres vender?</div>
+      <div class="step-subtitle">Selecciona el tipo de producto</div>
+
+      <div class="type-grid">
+        <div class="type-card" data-value="curso">
+          <span class="type-icon">📚</span>
+          <span class="type-label">Curso Online</span>
+        </div>
+        <div class="type-card" data-value="servicio">
+          <span class="type-icon">💼</span>
+          <span class="type-label">Servicio Digital</span>
+        </div>
+        <div class="type-card" data-value="membresía">
+          <span class="type-icon">👑</span>
+          <span class="type-label">Membresía</span>
+        </div>
+        <div class="type-card" data-value="producto">
+          <span class="type-icon">📦</span>
+          <span class="type-label">Producto Físico</span>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="step1Next" disabled>Siguiente →</button>
+      </div>
+    </div>
+
+    <!-- STEP 2: Basic data -->
+    <div class="step-panel" data-step="2">
+      <div class="step-title">Datos del producto</div>
+      <div class="step-subtitle">Nombre, descripción y precio</div>
+
+      <div class="field">
+        <label for="productName">Nombre del producto *</label>
+        <input type="text" id="productName" placeholder="Ej: Curso de Marketing Digital 2026">
+      </div>
+
+      <div class="field">
+        <label for="productDesc">Descripción breve *</label>
+        <textarea id="productDesc" placeholder="Describe en 2-3 líneas qué aprenderán o qué obtendrán..."></textarea>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="price">Precio *</label>
+          <input type="text" id="price" placeholder="Ej: $197 USD">
+        </div>
+        <div class="field">
+          <label for="checkoutUrl">URL de pago</label>
+          <input type="url" id="checkoutUrl" placeholder="https://pay.hotmart.com/...">
+          <div class="hint">Hotmart, Stripe, MercadoPago, etc.</div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="step2Back">← Atrás</button>
+        <button class="btn btn-primary" id="step2Next" disabled>Siguiente →</button>
+      </div>
+    </div>
+
+    <!-- STEP 3: Audience -->
+    <div class="step-panel" data-step="3">
+      <div class="step-title">¿A quién va dirigido?</div>
+      <div class="step-subtitle">Describe tu cliente ideal</div>
+
+      <div class="field">
+        <label for="audience">Audiencia objetivo *</label>
+        <textarea id="audience" rows="4" placeholder="Ej: Emprendedores que quieren escalar sus ventas online sin invertir en ads..."></textarea>
+        <div class="hint">Cuanto más específico, mejor copy generará Jarvis.</div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="step3Back">← Atrás</button>
+        <button class="btn btn-primary" id="step3Next" disabled>Siguiente →</button>
+      </div>
+    </div>
+
+    <!-- STEP 4: Style -->
+    <div class="step-panel" data-step="4">
+      <div class="step-title">Estilo visual</div>
+      <div class="step-subtitle">Elige la estética de tu landing</div>
+
+      <div class="style-grid">
+        <div class="style-card" data-value="futuristic">
+          <div class="style-emoji">🚀</div>
+          <div class="style-name">Futurista</div>
+        </div>
+        <div class="style-card" data-value="premium">
+          <div class="style-emoji">✨</div>
+          <div class="style-name">Premium</div>
+        </div>
+        <div class="style-card" data-value="energetic">
+          <div class="style-emoji">🔥</div>
+          <div class="style-name">Energético</div>
+        </div>
+        <div class="style-card" data-value="corporate">
+          <div class="style-emoji">💼</div>
+          <div class="style-name">Corporativo</div>
+        </div>
+        <div class="style-card" data-value="natural">
+          <div class="style-emoji">🌿</div>
+          <div class="style-name">Natural</div>
+        </div>
+        <div class="style-card" data-value="bold">
+          <div class="style-emoji">💜</div>
+          <div class="style-name">Bold</div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="step4Back">← Atrás</button>
+        <button class="btn btn-primary" id="step4Next" disabled>Siguiente →</button>
+      </div>
+    </div>
+
+    <!-- STEP 5: Extras + Generate -->
+    <div class="step-panel" data-step="5">
+      <div class="step-title">Extras (opcional)</div>
+      <div class="step-subtitle">Tracking y configuración avanzada</div>
+
+      <label class="extra-toggle">
+        <input type="checkbox" id="toggleExtras">
+        Agregar video, Pixel y Analytics
+      </label>
+
+      <div class="extras-panel" id="extrasPanel">
+        <div class="field">
+          <label for="videoUrl">URL de YouTube o Vimeo</label>
+          <input type="url" id="videoUrl" placeholder="https://youtube.com/watch?v=...">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="pixelId">Meta Pixel ID</label>
+            <input type="text" id="pixelId" placeholder="123456789">
+          </div>
+          <div class="field">
+            <label for="gaId">Google Analytics ID</label>
+            <input type="text" id="gaId" placeholder="G-XXXXXXXX">
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="step5Back">← Atrás</button>
+        <button class="btn btn-primary" id="generateBtn">🚀 Generar Landing</button>
+      </div>
+    </div>
+
+    <!-- RESULT -->
+    <div class="step-panel result-panel" id="resultPanel">
+      <div class="result-success">🎉</div>
+      <div class="step-title">¡Tu landing está lista!</div>
+      <div class="result-url" id="resultUrl"></div>
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="viewBtn">Ver landing →</button>
+        <button class="btn btn-primary" id="restartBtn">Crear otra</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="spinner"></div>
+    <div style="font-size:1.1rem;font-weight:600;">Generando tu landing...</div>
+    <div style="color:var(--muted);font-size:0.85rem;">Esto puede tardar 30-60 segundos</div>
+  </div>
+
+  <script>
+    const state = {
+      productType: '',
+      name: '',
+      description: '',
+      price: '',
+      checkoutUrl: '',
+      audience: '',
+      style: '',
+      videoUrl: '',
+      pixelId: '',
+      gaId: '',
+    };
+
+    let currentStep = 1;
+
+    function goToStep(n) {
+      document.querySelectorAll('.step-panel').forEach(el => el.classList.remove('active'));
+      document.querySelector(`.step-panel[data-step="${n}"]`).classList.add('active');
+
+      document.querySelectorAll('.progress-step').forEach(el => {
+        const s = parseInt(el.dataset.step);
+        el.classList.toggle('active', s === n);
+        el.classList.toggle('done', s < n);
+      });
+
+      currentStep = n;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function validateStep(n) {
+      if (n === 1) return !!state.productType;
+      if (n === 2) return state.name.length > 2 && state.description.length > 5;
+      if (n === 3) return state.audience.length > 5;
+      if (n === 4) return !!state.style;
+      return true;
+    }
+
+    function updateNavButtons() {
+      const nextBtn = document.querySelector(`.step-panel[data-step="${currentStep}"] .btn-primary`);
+      if (nextBtn) nextBtn.disabled = !validateStep(currentStep);
+    }
+
+    // Type cards
+    document.querySelectorAll('.type-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.querySelectorAll('.type-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        state.productType = card.dataset.value;
+        updateNavButtons();
+      });
+    });
+
+    // Style cards
+    document.querySelectorAll('.style-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.querySelectorAll('.style-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        state.style = card.dataset.value;
+        updateNavButtons();
+      });
+    });
+
+    // Form inputs
+    const textFields = {
+      productName: 'name', productDesc: 'description', price: 'price',
+      checkoutUrl: 'checkoutUrl', audience: 'audience', videoUrl: 'videoUrl',
+      pixelId: 'pixelId', gaId: 'gaId'
+    };
+
+    Object.entries(textFields).forEach(([id, key]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', () => {
+        state[key] = el.value;
+        updateNavButtons();
+      });
+    });
+
+    // Extras toggle
+    document.getElementById('toggleExtras').addEventListener('change', e => {
+      document.getElementById('extrasPanel').classList.toggle('visible', e.target.checked);
+    });
+
+    // Navigation
+    document.getElementById('step1Next')?.addEventListener('click', () => goToStep(2));
+    document.getElementById('step2Back')?.addEventListener('click', () => goToStep(1));
+    document.getElementById('step2Next')?.addEventListener('click', () => goToStep(3));
+    document.getElementById('step3Back')?.addEventListener('click', () => goToStep(2));
+    document.getElementById('step3Next')?.addEventListener('click', () => goToStep(4));
+    document.getElementById('step4Back')?.addEventListener('click', () => goToStep(3));
+    document.getElementById('step4Next')?.addEventListener('click', () => goToStep(5));
+    document.getElementById('step5Back')?.addEventListener('click', () => goToStep(4));
+
+    // Generate
+    document.getElementById('generateBtn').addEventListener('click', async () => {
+      const overlay = document.getElementById('loadingOverlay');
+      overlay.classList.add('active');
+
+      const payload = {
+        action: 'create_landing',
+        prompt: `${state.name}\n\n${state.description}\n\nPara: ${state.audience}`,
+        style: state.style,
+        checkout_url: state.checkoutUrl || 'https://pay.hotmart.com/CONFIGURE',
+        video_url: state.videoUrl || undefined,
+        pixel_id: state.pixelId || undefined,
+        ga_id: state.gaId || undefined,
+        countdown_hours: 48,
+      };
+
+      try {
+        const res = await fetch('/api/landing-generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await res.json();
+        overlay.classList.remove('active');
+
+        if (data.url) {
+          document.getElementById('resultUrl').innerHTML =
+            `<a href="${data.url}" target="_blank">${data.url}</a>`;
+          document.getElementById('viewBtn').onclick = () => window.open(data.url, '_blank');
+        } else {
+          document.getElementById('resultUrl').textContent = '❌ Error: ' + (data.error || 'Desconocido');
+        }
+
+        document.querySelectorAll('.step-panel').forEach(el => el.classList.remove('active'));
+        document.getElementById('resultPanel').classList.add('active');
+        document.querySelectorAll('.progress-step').forEach(el => el.classList.add('done'));
+      } catch (err) {
+        overlay.classList.remove('active');
+        document.getElementById('resultUrl').textContent = '❌ Error de conexión: ' + err.message;
+        document.querySelectorAll('.step-panel').forEach(el => el.classList.remove('active'));
+        document.getElementById('resultPanel').classList.add('active');
+      }
+    });
+
+    // Restart
+    document.getElementById('restartBtn').addEventListener('click', () => location.reload());
+  </script>
+</body>
+</html>

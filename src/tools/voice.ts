@@ -7,6 +7,8 @@ type ApiResponse = Record<string, any>;
 
 const OUTPUT_DIR = process.env.VOICE_OUTPUT_DIR || "./output/voice";
 const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1";
+const FETCH_TIMEOUT = 30000;
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 function ensureOutputDir(): void {
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
@@ -16,6 +18,16 @@ function elKey(): string {
   const k = process.env.ELEVENLABS_API_KEY;
   if (!k) throw new Error("ELEVENLABS_API_KEY no configurado");
   return k;
+}
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ─── TTS ──────────────────────────────────────────────────────────────────────
@@ -28,7 +40,7 @@ export async function textToSpeech(
   similarity: number,
   saveFile:  boolean
 ): Promise<string> {
-  const res = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}`, {
+  const res = await fetchWithTimeout(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}`, {
     method: "POST",
     headers: {
       "xi-api-key":    elKey(),
@@ -48,6 +60,7 @@ export async function textToSpeech(
   }
 
   const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length === 0) throw new Error("TTS retornó audio vacío");
 
   let savedPath: string | undefined;
   if (saveFile) {
@@ -74,6 +87,11 @@ async function speechToText(audioPath: string): Promise<string> {
   if (!fs.existsSync(audioPath)) return `❌ Archivo no encontrado: ${audioPath}`;
 
   const file = fs.readFileSync(audioPath);
+  if (file.length === 0) return `❌ Archivo vacío: ${audioPath}`;
+  if (file.length > MAX_FILE_SIZE) {
+    return `❌ Archivo demasiado grande: ${(file.length / 1024 / 1024).toFixed(1)}MB (límite: 10MB)`;
+  }
+
   const form = new FormData();
   form.append(
     "audio",
@@ -82,7 +100,7 @@ async function speechToText(audioPath: string): Promise<string> {
   );
   form.append("model_id", "scribe_v1");
 
-  const res = await fetch(`${ELEVENLABS_BASE}/speech-to-text`, {
+  const res = await fetchWithTimeout(`${ELEVENLABS_BASE}/speech-to-text`, {
     method: "POST",
     headers: { "xi-api-key": elKey() },
     body: form,
@@ -123,7 +141,7 @@ export async function transcribeBuffer(buffer: Buffer, _ext = "mp3", _lang = "es
 // ─── List voices ──────────────────────────────────────────────────────────────
 
 async function listVoices(filter?: string): Promise<string> {
-  const res = await fetch(`${ELEVENLABS_BASE}/voices`, {
+  const res = await fetchWithTimeout(`${ELEVENLABS_BASE}/voices`, {
     headers: { "xi-api-key": elKey() },
   });
 
@@ -150,16 +168,24 @@ async function listVoices(filter?: string): Promise<string> {
 // ─── Voice clone (add voice) ──────────────────────────────────────────────────
 
 async function cloneVoice(name: string, audioFilePaths: string[]): Promise<string> {
+  if (!name || !audioFilePaths || audioFilePaths.length === 0) {
+    throw new Error("Se requiere name y al menos un archivo de audio en audio_files");
+  }
+
   const form = new FormData();
   form.append("name", name);
 
   for (const p of audioFilePaths) {
-    if (!fs.existsSync(p)) return `❌ Archivo no encontrado: ${p}`;
+    if (!fs.existsSync(p)) throw new Error(`Archivo no encontrado: ${p}`);
     const buf = fs.readFileSync(p);
+    if (buf.length === 0) throw new Error(`Archivo vacío: ${p}`);
+    if (buf.length > MAX_FILE_SIZE) {
+      throw new Error(`Archivo demasiado grande: ${p} (${(buf.length / 1024 / 1024).toFixed(1)}MB, límite: 10MB)`);
+    }
     form.append("files", new Blob([buf], { type: "audio/mpeg" }), path.basename(p));
   }
 
-  const res = await fetch(`${ELEVENLABS_BASE}/voices/add`, {
+  const res = await fetchWithTimeout(`${ELEVENLABS_BASE}/voices/add`, {
     method: "POST",
     headers: { "xi-api-key": elKey() },
     body: form,

@@ -1,13 +1,25 @@
 import { Tool } from "../shared/types.js";
+import { sanitizeWebContent } from "../shared/sanitize.js";
 
 const TAVILY_API_URL = "https://api.tavily.com/search";
+const FETCH_TIMEOUT = 30000;
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function searchWeb(query: string): Promise<string> {
     const apiKey = process.env.TAVILY_API_KEY;
     if (!apiKey) return "❌ Error: TAVILY_API_KEY no configurada en el .env.";
 
     try {
-        const response = await fetch(TAVILY_API_URL, {
+        const response = await fetchWithTimeout(TAVILY_API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -22,10 +34,11 @@ async function searchWeb(query: string): Promise<string> {
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
         const data = await response.json() as any;
         const answer = data.answer ? `💡 Resumen: ${data.answer as string}\n\n` : "";
-        const results = (data.results as any[])
+        const results = (data.results as any[] || [])
             .map((r, i) => `${i + 1}. [${r.title as string}](${r.url as string})\n   ${r.content as string}`)
             .join("\n\n");
 
+        if (!results && !answer) return "❌ No se encontraron resultados.";
         return `${answer}🔍 *Resultados de búsqueda:*\n\n${results}`;
     } catch (err: any) {
         return `❌ Error en búsqueda web: ${err.message as string}`;
@@ -37,7 +50,7 @@ async function extractContent(url: string): Promise<string> {
     if (!apiKey) return "❌ Error: TAVILY_API_KEY no configurada.";
 
     try {
-        const response = await fetch("https://api.tavily.com/extract", {
+        const response = await fetchWithTimeout("https://api.tavily.com/extract", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -48,8 +61,9 @@ async function extractContent(url: string): Promise<string> {
 
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
         const data = await response.json() as any;
-        if (data.results && data.results.length > 0) {
-            return `📄 *Contenido extraído de ${url}:*\n\n${data.results[0].raw_content.slice(0, 5000) as string}`;
+        if (data.results && data.results.length > 0 && data.results[0].raw_content) {
+            const rawContent = (data.results[0].raw_content as string).slice(0, 5000);
+            return `📄 *Contenido extraído de ${url}:*\n\n${sanitizeWebContent(rawContent)}`;
         }
         return "❌ No se pudo extraer contenido de la URL.";
     } catch (err: any) {

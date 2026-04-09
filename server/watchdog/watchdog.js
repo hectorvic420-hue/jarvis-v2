@@ -15,6 +15,8 @@ const ANTHROPIC_KEY     = process.env.ANTHROPIC_API_KEY;
 const RATE_LIMIT_FILE   = "/tmp/watchdog-repairs.json";
 const MAX_REPAIRS_HOUR  = 3;
 const CHECK_INTERVAL_MS = 30_000;
+const PORT              = process.env.PORT ?? 8080;
+const HEALTH_INTERVAL_MS = 5 * 60 * 1000;
 
 // ─── Rate limiter ──────────────────────────────────────────────────────────────
 function getRepairsInLastHour() {
@@ -258,7 +260,47 @@ async function checkOnce() {
   await repairJarvis(logs);
 }
 
+// ─── Agent health check ───────────────────────────────────────────────────────
+let lastErrorRateNotification = 0;
+
+async function checkAgentHealth() {
+  try {
+    const res = await fetch(`http://localhost:${PORT}/health`, { timeout: 10_000 });
+    if (!res.ok) {
+      console.log(`[watchdog] Health check falló: status ${res.status}`);
+      await notifyTelegram(`⚠️ *Health check falló:* HTTP ${res.status}`);
+      return;
+    }
+
+    const data = await res.json();
+    if (data.status !== "ok") {
+      console.log(`[watchdog] Health check falló: status ${data.status}`);
+      await notifyTelegram(`⚠️ *Health check falló:* status ${data.status}`);
+      return;
+    }
+
+    const { lastRuns } = data;
+    if (lastRuns && lastRuns.errors_1h > 10 && lastRuns.total_1h > 0) {
+      const errorRate = lastRuns.errors_1h / lastRuns.total_1h;
+      if (errorRate > 0.5) {
+        const now = Date.now();
+        if (now - lastErrorRateNotification > 3_600_000) {
+          lastErrorRateNotification = now;
+          await notifyTelegram(`⚠️ *Jarvis tiene >50% tasa de error en la última hora*\nErrores: ${lastRuns.errors_1h}/${lastRuns.total_1h}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.log(`[watchdog] Health check falló: ${err.message}`);
+    await notifyTelegram(`⚠️ *Health check falló:* ${err.message.slice(0, 100)}`);
+  }
+}
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 console.log("[watchdog] Started — checking jarvis-v2 every 30s");
 checkOnce();
 setInterval(checkOnce, CHECK_INTERVAL_MS);
+
+console.log("[watchdog] Health check every 5 minutes");
+checkAgentHealth();
+setInterval(checkAgentHealth, HEALTH_INTERVAL_MS);
