@@ -4,6 +4,8 @@ import { promisify }        from "util";
 import * as fs              from "fs";
 import * as path            from "path";
 import db                   from "../memory/db.js";
+import { detectInfraIssue, runInfraFix } from "./infra_repair.js";
+import { commitRepair }                   from "../shared/git_utils.js";
 import { Tool }             from "../shared/types.js";
 
 const execAsync = promisify(exec);
@@ -74,6 +76,25 @@ function extractFilesFromStack(logs: string): string[] {
   return [...files].slice(0, 3);
 }
 
+const CRITICAL_FILES = ["src/agent.ts", "src/index.ts", "src/llm.ts"];
+
+function buildCodeContext(affectedFiles: string[]): string {
+  const filesToRead = [...new Set([...affectedFiles, "src/agent.ts"])].slice(0, 4);
+  for (const f of CRITICAL_FILES) {
+    if (filesToRead.length >= 4) break;
+    if (!filesToRead.includes(f)) filesToRead.push(f);
+  }
+
+  let context = "";
+  for (const f of filesToRead) {
+    const abs = path.join(PROJECT_ROOT, f);
+    if (fs.existsSync(abs)) {
+      context += `\n\n--- ${f} ---\n${fs.readFileSync(abs, "utf-8").slice(0, 6_000)}`;
+    }
+  }
+  return context;
+}
+
 function backupFile(absolutePath: string): string {
   if (!fs.existsSync(BACKUPS_DIR)) fs.mkdirSync(BACKUPS_DIR, { recursive: true });
   const filename   = path.basename(absolutePath);
@@ -94,10 +115,35 @@ async function runRepair(chatId: string): Promise<string> {
     return "⚠️ No hay logs de error recientes. No hay nada que reparar.";
   }
 
-  const affectedFiles = extractFilesFromStack(logs);
-  if (affectedFiles.length === 0) {
-    affectedFiles.push("src/agent.ts");
+  // ── Infra check first ────────────────────────────────────────────────────────
+  const infraIssue = detectInfraIssue(logs);
+  if (infraIssue) {
+    const infraResult = await runInfraFix(infraIssue);
+    if (infraIssue.fix) {
+      try {
+        await execAsync("pm2 restart jarvis-v2", { cwd: PROJECT_ROOT, timeout: 30_000 });
+      } catch { /* best-effort */ }
+      await notifyTelegram(chatId,
+        `✅ *Auto-reparación de infra*\nTipo: \`${infraIssue.type}\`\n${infraResult}`
+      );
+    } else {
+      await notifyTelegram(chatId, `⚠️ *Problema de infra detectado*\n${infraResult}`);
+    }
+    return infraResult;
   }
+
+  // ── npm install if missing module ────────────────────────────────────────────
+  if (logs.includes("Cannot find module")) {
+    try {
+      await execAsync("npm install", { cwd: PROJECT_ROOT, timeout: 120_000 });
+    } catch (err) {
+      return `❌ npm install falló: ${(err as Error).message.slice(0, 200)}`;
+    }
+  }
+
+  // ── Identify affected files ──────────────────────────────────────────────────
+  let affectedFiles = extractFilesFromStack(logs);
+  if (affectedFiles.length === 0) affectedFiles = ["src/agent.ts"];
 
   const targetRelPath = affectedFiles[0];
   const targetAbsPath = path.join(PROJECT_ROOT, targetRelPath);
@@ -105,37 +151,49 @@ async function runRepair(chatId: string): Promise<string> {
   if (!targetAbsPath.startsWith(path.join(PROJECT_ROOT, "src"))) {
     return `❌ Por seguridad, solo puedo editar archivos en src/. Detecté: ${targetRelPath}`;
   }
-
   if (!fs.existsSync(targetAbsPath)) {
     return `❌ Archivo no encontrado: ${targetAbsPath}`;
   }
 
   const originalCode = fs.readFileSync(targetAbsPath, "utf-8");
+  const codeContext  = buildCodeContext(affectedFiles);
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   let fixedCode: string;
+  let fixSummary: string;
   try {
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8192,
-      system:
-        "You are fixing a bug in Jarvis V2, a TypeScript/Node.js Telegram bot. " +
-        "You will receive error logs and the source file content. " +
-        "Return ONLY the complete corrected TypeScript file content with no explanation, no markdown fences, no comments about the fix. " +
-        "Just the raw TypeScript code.",
-      messages: [
-        {
+    const [fixMsg, summaryMsg] = await Promise.all([
+      anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 8192,
+        system:
+          "You are fixing a bug in Jarvis V2, a TypeScript/Node.js Telegram bot. " +
+          "Return ONLY the complete corrected TypeScript file for the PRIMARY file — " +
+          "no explanation, no markdown fences, just raw TypeScript.",
+        messages: [{
           role: "user",
           content:
             `ERROR LOGS (last 100 lines):\n${logs}\n\n` +
-            `SOURCE FILE (${targetRelPath}):\n${originalCode}\n\n` +
-            "Fix the bug. Return ONLY the complete corrected TypeScript file.",
-        },
-      ],
-    });
+            `PRIMARY FILE TO FIX (${targetRelPath}):\n${originalCode}\n\n` +
+            `CONTEXT FILES:${codeContext}\n\n` +
+            "Fix the bug in the PRIMARY FILE. Return ONLY its complete corrected TypeScript.",
+        }],
+      }),
+      anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 128,
+        messages: [{
+          role: "user",
+          content:
+            `Generate a git commit message suffix (under 60 chars, no quotes) describing this repair:\n` +
+            `File: ${targetRelPath}\nError summary: ${logs.slice(0, 300)}`,
+        }],
+      }),
+    ]);
 
-    fixedCode = (message.content[0] as { type: string; text: string }).text.trim();
+    fixedCode  = (fixMsg.content[0]     as { type: string; text: string }).text.trim();
+    fixSummary = (summaryMsg.content[0] as { type: string; text: string }).text.trim().slice(0, 60);
   } catch (err) {
     logRepair("repair_failed", targetRelPath, undefined, (err as Error).message);
     return `❌ Claude API falló al generar fix: ${(err as Error).message}`;
@@ -144,17 +202,14 @@ async function runRepair(chatId: string): Promise<string> {
   const backupPath = backupFile(targetAbsPath);
   fs.writeFileSync(targetAbsPath, fixedCode, "utf-8");
 
+  // ── Compile check ────────────────────────────────────────────────────────────
   let compileOk = false;
   let compileError = "";
   try {
-    await execAsync("npx tsc --noEmit", {
-      cwd: PROJECT_ROOT,
-      timeout: 60_000,
-    });
+    await execAsync("npx tsc --noEmit", { cwd: PROJECT_ROOT, timeout: 60_000 });
     compileOk = true;
   } catch (err) {
-    compileError = (err as Error & { stderr?: string }).stderr ?? (err as Error).message;
-    compileError = compileError.slice(0, 500);
+    compileError = ((err as Error & { stderr?: string }).stderr ?? (err as Error).message).slice(0, 500);
   }
 
   if (!compileOk) {
@@ -169,6 +224,7 @@ async function runRepair(chatId: string): Promise<string> {
     return `❌ Fix generado pero no compila. Restauré el original.\nError: ${compileError.slice(0, 300)}`;
   }
 
+  // ── Build and restart ────────────────────────────────────────────────────────
   try {
     await execAsync("npm run build", { cwd: PROJECT_ROOT, timeout: 120_000 });
     await execAsync("pm2 restart jarvis-v2", { cwd: PROJECT_ROOT, timeout: 30_000 });
@@ -178,23 +234,24 @@ async function runRepair(chatId: string): Promise<string> {
     logRepair("repair_build_error", targetRelPath, backupPath, logs.slice(0, 300), buildErr);
     await notifyTelegram(chatId,
       `⚠️ *Auto-reparación: build falló*\n` +
-      `Restauré el original de: \`${targetRelPath}\`\n` +
-      `Error: \`${buildErr}\``
+      `Restauré el original de: \`${targetRelPath}\`\nError: \`${buildErr}\``
     );
     return `❌ Fix compiló pero el build falló. Restauré el original.\nError: ${buildErr}`;
   }
 
-  const fixSummary = `Patched ${targetRelPath}`;
+  // ── Git commit ───────────────────────────────────────────────────────────────
+  const commitHash = await commitRepair(targetAbsPath, fixSummary);
   logRepair("repair_success", targetRelPath, backupPath, logs.slice(0, 300), fixSummary);
 
   await notifyTelegram(chatId,
     `✅ *Me reparé exitosamente*\n` +
     `Archivo: \`${targetRelPath}\`\n` +
     `Backup: \`${backupPath}\`\n` +
-    `Estado: reiniciando...`
+    `Commit: \`${commitHash ?? "sin git"}\`\n` +
+    `Fix: ${fixSummary}`
   );
 
-  return `✅ Reparación exitosa.\nArchivo: ${targetRelPath}\nBackup guardado en: ${backupPath}`;
+  return `✅ Reparación exitosa.\nArchivo: ${targetRelPath}\nCommit: ${commitHash ?? "sin git"}\nFix: ${fixSummary}`;
 }
 
 // ─── Tool definition ──────────────────────────────────────────────────────────
@@ -243,13 +300,7 @@ export const selfRepairTool: Tool = {
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
         const affectedFiles = extractFilesFromStack(logs);
 
-        let codeContext = "";
-        for (const f of affectedFiles) {
-          const abs = path.join(PROJECT_ROOT, f);
-          if (fs.existsSync(abs)) {
-            codeContext += `\n\n--- ${f} ---\n${fs.readFileSync(abs, "utf-8").slice(0, 3000)}`;
-          }
-        }
+        const codeContext = buildCodeContext(affectedFiles);
 
         const msg = await anthropic.messages.create({
           model: "claude-sonnet-4-6",
