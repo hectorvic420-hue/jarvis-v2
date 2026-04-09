@@ -56,9 +56,7 @@ function findChromiumExecutable(): string | undefined {
   ];
 
   for (const p of candidates) {
-    try {
-      if (require("fs").existsSync(p)) return p;
-    } catch { /* ignore */ }
+    if (fs.existsSync(p)) return p;
   }
   return undefined;
 }
