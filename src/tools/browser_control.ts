@@ -1,5 +1,6 @@
 import { chromium, Browser, BrowserContext, Page } from "playwright";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { Tool } from "../shared/types.js";
 
@@ -57,6 +58,7 @@ async function getOrCreateSession(chatId: string, headed = false): Promise<Brows
 // ─── Windows Agent proxy ──────────────────────────────────────────────────────
 
 async function callWindowsAgent(
+  chatId: string,
   params: Record<string, unknown>
 ): Promise<string> {
   const agentUrl = process.env.WINDOWS_AGENT_URL;
@@ -68,7 +70,7 @@ async function callWindowsAgent(
       "Content-Type": "application/json",
       Authorization: `Bearer ${secret}`,
     },
-    body: JSON.stringify(params),
+    body: JSON.stringify({ ...params, chat_id: chatId }),
   });
 
   if (!res.ok) {
@@ -81,6 +83,11 @@ async function callWindowsAgent(
     result: string;
     screenshot_path?: string;
   };
+
+  // Store screenshot path so telegram.ts can send it as a photo
+  if (json.screenshot_path) {
+    screenshotStore.set(chatId, json.screenshot_path);
+  }
 
   return json.result;
 }
@@ -109,7 +116,7 @@ async function fillField(page: Page, selector: string, value: string): Promise<s
 }
 
 async function takeScreenshot(page: Page, chatId: string): Promise<string> {
-  const screenshotsDir = "/tmp/jarvis-screenshots";
+  const screenshotsDir = process.env.SCREENSHOTS_DIR ?? path.join(os.tmpdir(), "jarvis-screenshots");
   if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
 
   const filePath = path.join(screenshotsDir, `screenshot-${chatId}-${Date.now()}.png`);
@@ -237,11 +244,11 @@ export const browserControlTool: Tool = {
       mode,
     } = params as Record<string, string>;
 
-    // Route to Windows agent if requested and configured
+    // Route to Windows agent only when explicitly requested via mode="windows"
     const windowsUrl = process.env.WINDOWS_AGENT_URL;
-    if (mode === "windows" || (!mode && windowsUrl)) {
-      if (!windowsUrl) return "❌ WINDOWS_AGENT_URL no configurado. Usa mode='server' o configura la variable.";
-      return await callWindowsAgent(params);
+    if (mode === "windows") {
+      if (!windowsUrl) return "❌ WINDOWS_AGENT_URL no configurado. Configura la variable de entorno.";
+      return await callWindowsAgent(chatId, params);
     }
 
     try {
