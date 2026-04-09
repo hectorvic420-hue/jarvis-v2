@@ -32,6 +32,37 @@ setInterval(() => {
   }
 }, 60_000);
 
+/**
+ * Find the Chromium executable across known locations.
+ * PM2 may run as root (HOME=/root) while playwright was installed as another user.
+ */
+function findChromiumExecutable(): string | undefined {
+  // Explicit override via env var
+  if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
+    return process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+  }
+
+  const candidates = [
+    // Playwright cache for hectorvic420 (common GCP setup)
+    "/home/hectorvic420/.cache/ms-playwright/chromium-1217/chrome-linux/chrome",
+    "/home/hectorvic420/.cache/ms-playwright/chromium_headless_shell-1217/chrome-linux/headless_shell",
+    // Root cache (if installed as root)
+    "/root/.cache/ms-playwright/chromium-1217/chrome-linux/chrome",
+    "/root/.cache/ms-playwright/chromium_headless_shell-1217/chrome-linux/headless_shell",
+    // System chromium
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/snap/bin/chromium",
+  ];
+
+  for (const p of candidates) {
+    try {
+      if (require("fs").existsSync(p)) return p;
+    } catch { /* ignore */ }
+  }
+  return undefined;
+}
+
 async function getOrCreateSession(chatId: string, headed = false): Promise<BrowserSession> {
   const existing = sessions.get(chatId);
   if (existing) {
@@ -39,8 +70,12 @@ async function getOrCreateSession(chatId: string, headed = false): Promise<Brows
     return existing;
   }
 
+  const executablePath = findChromiumExecutable();
+  console.log(`[browser_control] Using chromium: ${executablePath ?? "playwright default"}`);
+
   const browser = await chromium.launch({
     headless: !headed,
+    executablePath,
     args: headed ? [] : ["--no-sandbox", "--disable-setuid-sandbox"],
   });
   const context = await browser.newContext({
