@@ -76,7 +76,13 @@ async function getOrCreateSession(chatId: string, headed = false): Promise<Brows
   const browser = await chromium.launch({
     headless: !headed,
     executablePath,
-    args: headed ? [] : ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: headed ? [] : [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",   // prevent crashes on low /dev/shm servers
+      "--disable-gpu",
+      "--single-process",
+    ],
   });
   const context = await browser.newContext({
     userAgent:
