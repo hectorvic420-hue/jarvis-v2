@@ -10,7 +10,8 @@ import { voiceTool }             from "./voice.js";
 import { webResearcherTool }     from "./web_researcher.js";
 import { whatsappTool }          from "./whatsapp.js";
 import { landingBuilderTool }    from "./landing_builder.js";
-// developerTool (self_healing_architect) desactivado — escribe archivos corruptos en producción
+import { browserControlTool }    from "./browser_control.js";
+import { selfRepairTool }        from "./self_repair.js";
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,8 @@ export const tools: Record<string, Tool> = {
   [whatsappTool.name]:          whatsappTool,
   [heartbeatTool.name]:         heartbeatTool,
   [landingBuilderTool.name]:    landingBuilderTool,
+  [browserControlTool.name]:    browserControlTool,
+  [selfRepairTool.name]:        selfRepairTool,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -157,6 +160,23 @@ export const SYSTEM_PROMPT =
   `- Ejecutar comandos en el sistema operativo\n` +
   `- Ver métricas del servidor (CPU, RAM, uptime)\n` +
   `Palabras clave: "ejecuta este comando", "estado del servidor", "CPU", "memoria RAM"\n\n` +
+
+  `### browser_control\n` +
+  `Úsala para CUALQUIER cosa relacionada con controlar un navegador web:\n` +
+  `- Navegar a URLs, hacer clic en botones/links\n` +
+  `- Rellenar formularios y campos de texto\n` +
+  `- Hacer login en sitios web\n` +
+  `- Tomar screenshots de páginas web\n` +
+  `- Extraer texto de páginas\n` +
+  `Palabras clave: "entra a", "abre la página", "rellena el formulario", "haz login en", "screenshot de", "llena los datos en", "confirma en la web"\n\n` +
+
+  `### self_repair\n` +
+  `Úsala para diagnosticar y reparar errores del propio sistema Jarvis:\n` +
+  `- Leer logs de error del servidor\n` +
+  `- Diagnosticar bugs en el código\n` +
+  `- Ejecutar reparación autónoma (read + fix + build + restart)\n` +
+  `- Ver o restaurar backups de código\n` +
+  `Palabras clave: "repárate", "hay un error en tu código", "diagnostica", "ver logs", "auto-reparar", "rollback"\n\n` +
 
   `## REGLAS ABSOLUTAS\n\n` +
   `### 1. PROHIBIDO MENTIR\n` +
