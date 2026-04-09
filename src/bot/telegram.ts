@@ -1,4 +1,4 @@
-import { Bot, Context, session, SessionFlavor } from "grammy";
+import { Bot, Context, session, SessionFlavor, InputFile } from "grammy";
 import { runAgent }       from "../agent";
 import { tools as toolRegistry, listTools, SYSTEM_PROMPT } from "../tools/index.js";
 import { memoryService } from "../memory/service.js";
@@ -8,6 +8,7 @@ import {
   clearWizard, buildWizardStatus, WIZARD_MAP,
 } from "./landing_wizard.js";
 import { processMediaBuffer } from "./media_processor.js";
+import { screenshotStore } from "../tools/browser_control.js";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,19 @@ async function sendLong(ctx: BotCtx, text: string): Promise<void> {
       }
     }
   }
+}
+
+async function sendAgentResponse(ctx: BotCtx, response: string, chatId: string): Promise<void> {
+  const screenshotPath = screenshotStore.get(chatId);
+  if (screenshotPath) {
+    screenshotStore.delete(chatId);
+    try {
+      await ctx.replyWithPhoto(new InputFile(screenshotPath));
+    } catch (err) {
+      console.error("[BOT] Error enviando screenshot:", (err as Error).message);
+    }
+  }
+  await sendLong(ctx, response);
 }
 
 async function tryDelete(ctx: BotCtx, messageId: number): Promise<void> {
@@ -340,7 +354,7 @@ export function createTelegramBot(): Bot<BotCtx> {
         ? `${result.warning}\n\n${result.response}`
         : result.response;
 
-      await sendLong(ctx, response);
+      await sendAgentResponse(ctx, response, chatId);
     } catch (err) {
       await tryDelete(ctx, processingMsg.message_id);
       const msg = (err as Error).message;
@@ -352,7 +366,12 @@ export function createTelegramBot(): Bot<BotCtx> {
   // ── Fotos ─────────────────────────────────────────────────────────────────
   bot.on("message:photo", async (ctx) => {
     const userId  = ctx.from.id;
-    const photo   = ctx.message.photo.at(-1)!;
+    const photoArr = ctx.message.photo;
+    if (!photoArr || photoArr.length === 0) {
+      await ctx.reply("⚠️ No se recibió la imagen correctamente.");
+      return;
+    }
+    const photo   = photoArr.at(-1)!;
     const caption = ctx.message.caption ?? "Describe esta imagen en detalle";
 
     const processingMsg = await ctx.reply("⏳ Analizando imagen...");
