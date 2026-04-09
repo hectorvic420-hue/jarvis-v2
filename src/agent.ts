@@ -1,4 +1,4 @@
-import { callLLM, LLMMessage, LLMTool, LLMResponse, ImageBlock, ToolCall } from "./llm.js";
+import { callLLM, callLLMCheap, LLMMessage, LLMTool, LLMResponse, ImageBlock, ToolCall } from "./llm.js";
 import { Tool } from "./shared/types.js";
 import { memoryService } from "./memory/service.js";
 import { selfRepairTool } from "./tools/self_repair.js";
@@ -215,9 +215,9 @@ async function compressHistorySemantically(messages: LLMMessage[], userId: strin
   try {
     const conversationText = toCompress.map(m => `${m.role}: ${m.content}`).join("\n\n");
     
-    const response = await callLLM([
-      { role: "system", content: "Resumes conversations in 1 short paragraph." },
-      { role: "user", content: `Resume esta conversación en 1 párrafo corto enfocándote en decisiones, configuraciones y resultados clave.\n\nConversación:\n${conversationText.slice(0, 8000)}` },
+    const response = await callLLMCheap([
+      { role: "system", content: "Resume en 1 párrafo corto: decisiones, configuraciones, resultados clave." },
+      { role: "user", content: conversationText.slice(0, 6000) },
     ]);
 
     const summary = response.content?.trim();
@@ -304,7 +304,7 @@ export async function runAgent(
   const startTime = Date.now();
 
   // ─── Construir contexto ───
-  const ctx = memoryService.getContext(userId, 15);
+  const ctx = memoryService.getContext(userId, 10);
 
   const factBlock = ctx.facts.length > 0
     ? `\n\n## HECHOS DEL USUARIO:\n${ctx.facts.map(f => `- ${f.key}: ${f.value}`).join("\n")}`
@@ -756,19 +756,16 @@ async function generatePlan(
   const toolNames = availableTools.map(t => t.name).join(", ");
 
   try {
-    const response = await callLLM([
+    const response = await callLLMCheap([
       {
         role: "system",
         content:
-          "Eres un planificador estratégico. Analiza la solicitud y genera un plan paso a paso.\n" +
-          `Herramientas disponibles: ${toolNames}\n` +
-          "Responde ÚNICAMENTE con JSON válido, sin markdown ni texto adicional.\n" +
-          'Formato: {"plan": ["paso 1", "paso 2"], "estimated_steps": N}\n' +
-          "Máximo 6 pasos. Cada paso debe ser específico y accionable.",
+          `Tools: ${toolNames}. ` +
+          'Genera plan JSON: {"plan":["paso 1","paso 2"],"estimated_steps":N}. Máx 6 pasos. Solo JSON, sin markdown.',
       },
       {
         role: "user",
-        content: `Solicitud: ${userMessage}\n\nGenera el plan de ejecución.`,
+        content: userMessage,
       },
     ]);
 

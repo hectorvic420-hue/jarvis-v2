@@ -1,5 +1,5 @@
 import db from "./db.js";
-import { callLLM, LLMMessage } from "../llm.js";
+import { callLLM, callLLMCheap, LLMMessage } from "../llm.js";
 
 // ─── Fix 4: Timezone from environment variable ────────────────────────────────
 const TIMEZONE = process.env.TIMEZONE ?? "America/Bogota";
@@ -222,9 +222,9 @@ async function compressOldMessages(userId: string): Promise<void> {
 
     const conversationText = oldMessages.map((m) => `${m.role}: ${m.content}`).join("\n\n");
 
-    const summaryResponse = await callLLM([
-      { role: "system", content: "Eres un asistente que resume conversaciones." },
-      { role: "user", content: `Resume esta conversación en máximo 150 palabras, enfocándote en decisiones tomadas, configuraciones y resultados.\n\nConversación:\n${conversationText}` },
+    const summaryResponse = await callLLMCheap([
+      { role: "system", content: "Resume conversaciones en máximo 150 palabras. Solo decisiones, configuraciones y resultados clave." },
+      { role: "user", content: `Resume:\n${conversationText}` },
     ]);
 
     const summary = summaryResponse.content?.trim();
@@ -243,11 +243,11 @@ async function reflectOnResponse(
   agentResponse: string,
   usedTools: string[]
 ): Promise<{ score: number; missing?: string }> {
-  const prompt = `El usuario pidió: ${userRequest}. El agente respondió: ${agentResponse}. Tools usadas: ${usedTools.join(", ")}. En una escala 1-10, ¿qué tan completa fue la respuesta? Si < 7, describe en una oración qué faltó. Responde JSON: {score: N, missing: '...'}`;
+  const prompt = `Usuario pidió: ${userRequest.slice(0, 200)}. Respuesta: ${agentResponse.slice(0, 300)}. Tools: ${usedTools.join(", ")}. Escala 1-10 completitud. Si <7 qué faltó. JSON: {score:N, missing:'...'}`;
 
   try {
-    const response = await callLLM([
-      { role: "system", content: "Respondes con JSON válido." },
+    const response = await callLLMCheap([
+      { role: "system", content: "Responde solo JSON válido: {score:N, missing:'...'}" },
       { role: "user", content: prompt },
     ]);
 
@@ -300,12 +300,12 @@ async function extractAndSaveFacts(userId: string, conversation: Message[]): Pro
   const conversationText = recent.map((m) => `${m.role}: ${m.content}`).join("\n\n");
 
   const messages: LLMMessage[] = [
-    { role: "system", content: "Eres un asistente que extrae datos estructurados." },
-    { role: "user", content: `Analiza esta conversación y extrae hechos permanentes sobre el usuario o su negocio. Solo hechos que sean útiles en futuras conversaciones (nombre, producto, preferencias, configuraciones).\n\nConversación:\n${conversationText}\n\nResponde en JSON: [{"key": "...", "value": "..."}] Si no hay hechos nuevos, responde: []` },
+    { role: "system", content: "Extrae hechos permanentes del usuario (nombre, negocio, preferencias). JSON: [{\"key\":\"...\",\"value\":\"...\"}] o []" },
+    { role: "user", content: conversationText },
   ];
 
   try {
-    const response = await callLLM(messages);
+    const response = await callLLMCheap(messages);
     const content = response.content ?? "[]";
 
     let facts: { key: string; value: string }[];

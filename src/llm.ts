@@ -530,3 +530,44 @@ export async function callLLM(
     `Último error: ${lastError?.message}`
   );
 }
+
+/**
+ * Versión económica: usa Groq → OpenRouter → Gemini, saltando Claude.
+ * Para tareas auxiliares (reflexión, plan, extracción de hechos, resúmenes)
+ * donde no se necesita la máxima calidad y el costo importa.
+ */
+export async function callLLMCheap(
+  messages: LLMMessage[],
+  tools?: LLMTool[]
+): Promise<LLMResponse> {
+  const providers = [];
+
+  if (process.env.GROQ_API_KEY) {
+    providers.push({ name: "Groq", fn: () => callGroq(messages, tools) });
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    providers.push({ name: "OpenRouter", fn: () => callOpenRouter(messages, tools) });
+  }
+  if (process.env.GOOGLE_API_KEY) {
+    providers.push({ name: "Gemini", fn: () => callGemini(messages, tools) });
+  }
+  // Último recurso: Claude (evitar si es posible)
+  if (process.env.ANTHROPIC_API_KEY) {
+    providers.push({ name: "Claude", fn: () => callClaude(messages, tools) });
+  }
+
+  if (providers.length === 0) {
+    throw new Error("No hay proveedores LLM configurados.");
+  }
+
+  let lastError: Error | undefined;
+  for (const provider of providers) {
+    try {
+      return await provider.fn();
+    } catch (err) {
+      lastError = err as Error;
+    }
+  }
+
+  throw new Error(`callLLMCheap: todos fallaron. Último: ${lastError?.message}`);
+}
