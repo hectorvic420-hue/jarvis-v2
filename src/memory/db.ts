@@ -17,7 +17,9 @@ db.pragma("foreign_keys = ON");
 db.pragma("busy_timeout = 5000");
 db.pragma("synchronous = NORMAL");
 
-// ─── Migrations ───────────────────────────────────────────────────────────────
+// ─── Migrations — Part 1: core tables (no FTS5) ──────────────────────────────
+// Split into separate exec() calls so an FTS5 failure doesn't roll back the
+// core schema (better-sqlite3 wraps a single exec() in an implicit transaction).
 db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,33 +127,42 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_episodes_user    ON episodes(user_id);
   CREATE INDEX IF NOT EXISTS idx_episodes_created ON episodes(user_id, created_at DESC);
-
-  CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
-    title,
-    summary,
-    outcome,
-    content=episodes,
-    content_rowid=id,
-    tokenize="unicode61"
-  );
-
-  CREATE TRIGGER IF NOT EXISTS episodes_fts_ai AFTER INSERT ON episodes BEGIN
-    INSERT INTO episodes_fts(rowid, title, summary, outcome)
-    VALUES (new.id, new.title, new.summary, new.outcome);
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS episodes_fts_ad AFTER DELETE ON episodes BEGIN
-    INSERT INTO episodes_fts(episodes_fts, rowid, title, summary, outcome)
-    VALUES ('delete', old.id, old.title, old.summary, old.outcome);
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS episodes_fts_au AFTER UPDATE ON episodes BEGIN
-    INSERT INTO episodes_fts(episodes_fts, rowid, title, summary, outcome)
-    VALUES ('delete', old.id, old.title, old.summary, old.outcome);
-    INSERT INTO episodes_fts(rowid, title, summary, outcome)
-    VALUES (new.id, new.title, new.summary, new.outcome);
-  END;
 `);
+
+// ─── Migrations — Part 2: FTS5 virtual table + triggers (optional) ───────────
+// Isolated in its own exec() + try/catch. If the server's SQLite was compiled
+// without FTS5, this fails silently and episodic search falls back to recents.
+try {
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
+      title,
+      summary,
+      outcome,
+      content=episodes,
+      content_rowid=id,
+      tokenize="unicode61"
+    );
+
+    CREATE TRIGGER IF NOT EXISTS episodes_fts_ai AFTER INSERT ON episodes BEGIN
+      INSERT INTO episodes_fts(rowid, title, summary, outcome)
+      VALUES (new.id, new.title, new.summary, new.outcome);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS episodes_fts_ad AFTER DELETE ON episodes BEGIN
+      INSERT INTO episodes_fts(episodes_fts, rowid, title, summary, outcome)
+      VALUES ('delete', old.id, old.title, old.summary, old.outcome);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS episodes_fts_au AFTER UPDATE ON episodes BEGIN
+      INSERT INTO episodes_fts(episodes_fts, rowid, title, summary, outcome)
+      VALUES ('delete', old.id, old.title, old.summary, old.outcome);
+      INSERT INTO episodes_fts(rowid, title, summary, outcome)
+      VALUES (new.id, new.title, new.summary, new.outcome);
+    END;
+  `);
+} catch (err) {
+  console.warn("[DB] FTS5 no disponible — episodic search usará fallback a recents:", (err as Error).message);
+}
 
 // ─── Graceful Shutdown ─────────────────────────────────────────────────────────
 function closeDb(): void {
