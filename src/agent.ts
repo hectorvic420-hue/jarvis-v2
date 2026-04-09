@@ -189,6 +189,39 @@ function trimMessageHistory(messages: LLMMessage[], maxMessages: number): LLMMes
   return [systemMsg, ...blocks.flat()];
 }
 
+async function compressHistorySemantically(messages: LLMMessage[], userId: string | number): Promise<LLMMessage[]> {
+  if (messages.length <= 200) return messages;
+
+  const systemMsg = messages[0];
+  const toCompress = messages.slice(1, -30);
+  
+  if (toCompress.length < 10) return messages;
+
+  try {
+    const conversationText = toCompress.map(m => `${m.role}: ${m.content}`).join("\n\n");
+    
+    const response = await callLLM([
+      { role: "system", content: "Resumes conversations in 1 short paragraph." },
+      { role: "user", content: `Resume esta conversación en 1 párrafo corto enfocándote en decisiones, configuraciones y resultados clave.\n\nConversación:\n${conversationText.slice(0, 8000)}` },
+    ]);
+
+    const summary = response.content?.trim();
+    if (!summary) return messages;
+
+    const summaryMsg: LLMMessage = {
+      role: "system",
+      content: `[RESUMEN CONVERSACIÓN PREVIA]\n${summary}`,
+    };
+
+    const recentMessages = messages.slice(-30);
+    memoryService.saveMessage(userId, "system", summary, "summary");
+
+    return [systemMsg, summaryMsg, ...recentMessages];
+  } catch {
+    return messages;
+  }
+}
+
 /**
  * Intenta reparar una "alucinación": el LLM devolvió una tool call como texto JSON
  * en lugar de usar el mecanismo nativo. Solo repara si el JSON tiene exactamente
@@ -265,7 +298,12 @@ export async function runAgent(
   const timeBlock =
     `\n\n## CONTEXTO TEMPORAL:\n- Fecha y hora: ${new Date().toLocaleString("es-CO")}\n- Zona: America/Bogota`;
 
-  const fullSystem = systemPrompt + factBlock + timeBlock;
+  const latestSummary = memoryService.getLatestSummary(userId);
+  const summaryBlock = latestSummary
+    ? `\n\n## RESUMEN CONVERSACIÓN ANTERIOR:\n${latestSummary}`
+    : "";
+
+  const fullSystem = systemPrompt + factBlock + timeBlock + summaryBlock;
 
   const llmTools = buildLLMTools(tools);
   const toolMap  = new Map(tools.map((t) => [t.name, t]));
@@ -308,6 +346,8 @@ export async function runAgent(
   let warning: string | undefined;
   let geminiWarned = false;
   let loopBreaks   = 0;
+  let hasReflected = false;
+  const userMessageOriginal = userMessage;
 
   // ─── Loop principal ───────────────────────────────────────────────────────
   while (iterations < MAX_ITERATIONS) {
@@ -327,7 +367,7 @@ export async function runAgent(
     }
 
     if (messages.length > MAX_HISTORY_MESSAGES + 10) {
-      const trimmed = trimMessageHistory(messages, MAX_HISTORY_MESSAGES);
+      const trimmed = await compressHistorySemantically(messages, userId);
       messages.splice(0, messages.length, ...trimmed);
     }
 
@@ -368,8 +408,35 @@ export async function runAgent(
 
     // Sin tool calls → el LLM terminó, retornar respuesta final
     if (!hasCalls) {
+      const responseText = llmResponse.content ?? "Sin respuesta del LLM.";
+
+      // Reflexión: solo si no es respuesta conversacional corta y no ha reflexionado
+      if (!hasReflected && responseText.length >= 50 && iterations < MAX_ITERATIONS - 1) {
+        try {
+          const reflection = await memoryService.reflectOnResponse(
+            userMessageOriginal,
+            responseText,
+            usedTools
+          );
+
+          if (reflection.score < 7 && reflection.missing) {
+            hasReflected = true;
+            console.log(`[AGENT] Reflexión: score=${reflection.score}, missing="${reflection.missing}"`);
+            
+            // Agregar contexto de lo que falta y continuar el loop
+            messages.push({
+              role: "user",
+              content: `[CONTEXTO ADICIONAL - El usuario evaluó tu respuesta como incompleta (score ${reflection.score}/10): ${reflection.missing}. Por favor completa la respuesta.]`,
+            });
+            continue;
+          }
+        } catch {
+          // Fallback: no reflexionar
+        }
+      }
+
       const result = {
-        response:  llmResponse.content ?? "Sin respuesta del LLM.",
+        response:  responseText,
         iterations,
         usedTools: [...new Set(usedTools)],
         provider:  lastProvider,
@@ -385,12 +452,21 @@ export async function runAgent(
       tool_calls: llmResponse.tool_calls,
     });
 
-    // ─── Procesar cada tool call ──────────────────────────────────────────
+    // ─── Procesar tool calls en paralelo con validación previa ─────────────────
+    interface ToolCallItem {
+      toolCall: ToolCall;
+      skip: boolean;
+      skipMessage?: string;
+      tool?: Tool;
+      args?: Record<string, unknown>;
+    }
+    const toolCallsToProcess: ToolCallItem[] = [];
+
+    // Fase 1: Validar todos los tool calls síncronamente
     for (const toolCall of llmResponse.tool_calls!) {
       const toolName = toolCall.function.name;
       const toolArgs = toolCall.function.arguments || "{}";
 
-      // Actualizar historial local
       toolCallHistory.push(toolName);
       if (toolCallHistory.length > 10) toolCallHistory.shift();
       usedTools.push(toolName);
@@ -398,7 +474,7 @@ export async function runAgent(
       const currentCount = (toolCallCount.get(toolName) || 0) + 1;
       toolCallCount.set(toolName, currentCount);
 
-      // ── Circuit breaker: demasiadas llamadas totales a la misma tool ──
+      // Circuit breaker
       if (currentCount > MAX_SAME_TOOL_PER_RUN) {
         loopBreaks++;
         const lastErr = lastToolErrors.get(toolName);
@@ -418,15 +494,15 @@ export async function runAgent(
           return result;
         }
 
-        messages.push({
-          role:         "tool",
-          tool_call_id: toolCall.id,
-          content:      `[SISTEMA: '${toolName}' ya fue llamada ${currentCount} veces. NO la uses más en esta conversación. Informa directamente al usuario el resultado o el error.]`,
+        toolCallsToProcess.push({
+          toolCall,
+          skip: true,
+          skipMessage: `[SISTEMA: '${toolName}' ya fue llamada ${currentCount} veces. NO la uses más en esta conversación. Informa directamente al usuario el resultado o el error.]`,
         });
         continue;
       }
 
-      // ── Detección de bucle: misma tool + mismos args consecutivos ──
+      // Bucle consecutivos
       if (toolName === lastToolName && toolArgs === lastToolArgs) {
         consecSameCount++;
       } else {
@@ -453,15 +529,15 @@ export async function runAgent(
           return result;
         }
 
-        messages.push({
-          role:         "tool",
-          tool_call_id: toolCall.id,
-          content:      `[SISTEMA: '${toolName}' llamada ${consecSameCount} veces con argumentos idénticos — bucle detectado. Cambia de estrategia o informa el error al usuario directamente.]`,
+        toolCallsToProcess.push({
+          toolCall,
+          skip: true,
+          skipMessage: `[SISTEMA: '${toolName}' llamada ${consecSameCount} veces con argumentos idénticos — bucle detectado. Cambia de estrategia o informa el error al usuario directamente.]`,
         });
         continue;
       }
 
-      // ── Detección de bucle alternado A→B→A→B ──
+      // Bucle alternado
       if (toolCallHistory.length >= 4) {
         const [a, b, c, d] = toolCallHistory.slice(-4);
         if (a === c && b === d && a !== b) {
@@ -485,98 +561,113 @@ export async function runAgent(
             return result;
           }
 
-          messages.push({
-            role:         "tool",
-            tool_call_id: toolCall.id,
-            content:      `[SISTEMA: Bucle alternado (${a} ↔ ${b}). Detente y responde directamente al usuario con la información disponible. NO uses más herramientas.]`,
+          toolCallsToProcess.push({
+            toolCall,
+            skip: true,
+            skipMessage: `[SISTEMA: Bucle alternado (${a} ↔ ${b}). Detente y responde directamente al usuario con la información disponible. NO uses más herramientas.]`,
           });
           continue;
         }
       }
 
-      console.log(`[AGENT] Tool: ${toolName} (${currentCount}/${MAX_SAME_TOOL_PER_RUN})`);
-
-      // ── Verificar que la tool existe ──
+      // Verificar tool existe
       const tool = toolMap.get(toolName);
       if (!tool) {
-        messages.push({
-          role:         "tool",
-          tool_call_id: toolCall.id,
-          content:      `[ERROR: Herramienta '${toolName}' no existe en el registry.]`,
+        toolCallsToProcess.push({
+          toolCall,
+          skip: true,
+          skipMessage: `[ERROR: Herramienta '${toolName}' no existe en el registry.]`,
         });
         continue;
       }
 
-      // ── Parsear argumentos ──
+      // Parsear argumentos
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(toolArgs) as Record<string, unknown>;
       } catch {
-        messages.push({
-          role:         "tool",
-          tool_call_id: toolCall.id,
-          content:      `[ERROR: JSON inválido en argumentos de '${toolName}']`,
+        toolCallsToProcess.push({
+          toolCall,
+          skip: true,
+          skipMessage: `[ERROR: JSON inválido en argumentos de '${toolName}']`,
         });
         continue;
       }
 
-      // ── Ejecutar la herramienta ──
-      try {
-        const raw       = await executeToolWithTimeout(tool, args, String(userId));
-        const truncated = truncateToolResponse(raw);
+      // Tool válida, no se skipea
+      toolCallsToProcess.push({ toolCall, skip: false, tool, args });
+    }
 
-        if (truncated.startsWith("❌")) {
-          lastToolErrors.set(toolName, truncated.slice(0, 300));
-          console.warn(`[AGENT] Tool '${toolName}' error: ${truncated.slice(0, 100)}`);
+    // Fase 2: Ejecutar en paralelo los no-skipeados
+    const executionResults = await Promise.allSettled(
+      toolCallsToProcess
+        .filter(t => !t.skip && t.tool && t.args)
+        .map(async (t) => {
+          const { toolCall, tool, args } = t;
+          const toolName = tool!.name;
 
-          // Error fatal → salir inmediatamente, no tiene sentido reintentar
-          if (isFatalError(truncated)) {
-            console.warn(`[AGENT] Error fatal en '${toolName}' — saliendo sin reintentar.`);
-            const result = {
-              response:  truncated,
-              iterations,
-              usedTools: [...new Set(usedTools)],
-              provider:  lastProvider,
-              warning:   `Error fatal en '${toolName}'`,
-            };
-            logRun(traceId, startTime, userId, result);
-            return result;
+          console.log(`[AGENT] Tool: ${toolName}`);
+
+          try {
+            const raw       = await executeToolWithTimeout(tool!, args!, String(userId));
+            const truncated = truncateToolResponse(raw);
+
+            if (truncated.startsWith("❌")) {
+              lastToolErrors.set(toolName, truncated.slice(0, 300));
+              console.warn(`[AGENT] Tool '${toolName}' error: ${truncated.slice(0, 100)}`);
+            }
+
+            return { toolCall, truncated, success: !truncated.startsWith("❌") };
+          } catch (err) {
+            const errMsg = (err as Error).message;
+            lastToolErrors.set(toolName, errMsg);
+            return { toolCall, truncated: `[ERROR en '${toolName}': ${errMsg}]`, success: false };
           }
+        })
+    );
 
-          // Error persistente → avisar al LLM que no reintente
-          if (currentCount >= 2) {
-            messages.push({
-              role:         "tool",
-              tool_call_id: toolCall.id,
-              name:         toolName,
-              content:      `[ERROR PERSISTENTE en '${toolName}' (ha fallado ${currentCount} veces). NO reintentar. Informa al usuario el error exacto: ${truncated}]`,
-            });
-            continue;
-          }
-        }
-
+    // Fase 3: Insertar resultados en messages en orden original
+    let resultIndex = 0;
+    for (const item of toolCallsToProcess) {
+      if (item.skip) {
         messages.push({
           role:         "tool",
-          tool_call_id: toolCall.id,
-          name:         toolName,
-          content:      truncated,
+          tool_call_id: item.toolCall.id,
+          content:      item.skipMessage!,
         });
-        if (!truncated.startsWith("❌")) {
+      } else {
+        const result = executionResults[resultIndex++];
+        const value = result.status === "fulfilled" ? result.value : { truncated: "[ERROR: Promise rechazado]", success: false };
+        const { toolCall, truncated, success } = value as any;
+
+        if (success) {
           successfulToolCalls++;
         }
-      } catch (err) {
-        const errMsg = (err as Error).message;
-        lastToolErrors.set(toolName, errMsg);
+
+        // Error fatal
+        if (isFatalError(truncated)) {
+          console.warn(`[AGENT] Error fatal en '${toolCall.function.name}' — saliendo sin reintentar.`);
+          const res = {
+            response:  truncated,
+            iterations,
+            usedTools: [...new Set(usedTools)],
+            provider:  lastProvider,
+            warning:   `Error fatal en '${toolCall.function.name}'`,
+          };
+          logRun(traceId, startTime, userId, res);
+          return res;
+        }
+
         messages.push({
           role:         "tool",
           tool_call_id: toolCall.id,
-          content:      `[ERROR en '${toolName}': ${errMsg}]`,
+          content:      truncated,
         });
       }
-    } // fin for toolCall
+    }
 
     if (messages.length > MAX_HISTORY_MESSAGES + 5) {
-      const trimmed = trimMessageHistory(messages, MAX_HISTORY_MESSAGES);
+      const trimmed = await compressHistorySemantically(messages, userId);
       messages.splice(0, messages.length, ...trimmed);
     }
   } // fin while
@@ -592,4 +683,141 @@ export async function runAgent(
   };
   logRun(traceId, startTime, userId, result);
   return result;
+}
+
+// ─── Plan-and-Execute ────────────────────────────────────────────────────────
+
+interface ExecutionPlan {
+  steps:   string[];
+  planBlock: string;   // formatted for system prompt injection
+}
+
+const COMPLEX_TASK_KEYWORDS = [
+  /campa[ñn]a/i, /completo/i, /estrategia/i, /\btodo\b/i,
+  /\bplan\b/i, /paso\s+a\s+paso/i, /lanzamiento/i,
+];
+
+function isComplexTask(message: string): boolean {
+  const wordCount = message.trim().split(/\s+/).length;
+  if (wordCount > 40) return true;
+  return COMPLEX_TASK_KEYWORDS.some(k => k.test(message));
+}
+
+async function generatePlan(
+  userMessage: string,
+  availableTools: Tool[]
+): Promise<ExecutionPlan | null> {
+  const toolNames = availableTools.map(t => t.name).join(", ");
+
+  try {
+    const response = await callLLM([
+      {
+        role: "system",
+        content:
+          "Eres un planificador estratégico. Analiza la solicitud y genera un plan paso a paso.\n" +
+          `Herramientas disponibles: ${toolNames}\n` +
+          "Responde ÚNICAMENTE con JSON válido, sin markdown ni texto adicional.\n" +
+          'Formato: {"plan": ["paso 1", "paso 2"], "estimated_steps": N}\n' +
+          "Máximo 6 pasos. Cada paso debe ser específico y accionable.",
+      },
+      {
+        role: "user",
+        content: `Solicitud: ${userMessage}\n\nGenera el plan de ejecución.`,
+      },
+    ]);
+
+    const raw    = (response.content ?? "{}").replace(/```(?:json)?\n?|\n?```/g, "").trim();
+    const parsed = JSON.parse(raw) as { plan: string[]; estimated_steps?: number };
+
+    if (!Array.isArray(parsed.plan) || parsed.plan.length === 0) return null;
+
+    const steps = parsed.plan.slice(0, 6);
+    const planBlock =
+      `\n\n## PLAN DE EJECUCIÓN (${steps.length} pasos):\n` +
+      steps.map((s, i) => `[ ] Paso ${i + 1}: ${s}`).join("\n") +
+      "\n\nEjecuta los pasos en orden. Avanza automáticamente al siguiente cuando completes el anterior. " +
+      "NO pidas confirmación entre pasos.";
+
+    return { steps, planBlock };
+  } catch (err) {
+    console.warn("[PLAN] No se pudo generar plan:", (err as Error).message);
+    return null;
+  }
+}
+
+// Maps tool names → keywords found in plan step descriptions
+const TOOL_STEP_KEYWORDS: Record<string, string[]> = {
+  web_researcher:     ["investiga", "busca", "research", "competencia", "analiza", "web", "información"],
+  facebook_publisher: ["facebook", "publica", "post", "fb", "publicación", "publ"],
+  meta_ads:           ["ads", "anunci", "campaña", "publicidad", "meta", "pauta"],
+  landing_builder:    ["landing", "página", "web", "sitio", "venta"],
+  google_workspace:   ["google", "docs", "drive", "correo", "email", "calendar", "sheet"],
+  image_generator:    ["imagen", "foto", "visual", "diseño", "banner", "gráfico"],
+  video_composer:     ["video", "reel", "clip", "edita"],
+  voice:              ["voz", "audio", "narración", "podcast"],
+  whatsapp_manager:   ["whatsapp", "mensaje", "wha", "chat"],
+  system_control:     ["sistema", "archivo", "server", "servidor"],
+};
+
+function detectCompletedSteps(steps: string[], usedTools: string[]): Set<number> {
+  const completed = new Set<number>();
+  if (usedTools.length === 0) return completed;
+
+  for (const toolName of usedTools) {
+    const keywords = TOOL_STEP_KEYWORDS[toolName] ?? [toolName.replace(/_/g, " ")];
+    steps.forEach((step, i) => {
+      if (completed.has(i)) return;
+      const low = step.toLowerCase();
+      if (keywords.some(k => low.includes(k))) completed.add(i);
+    });
+  }
+
+  return completed;
+}
+
+export async function runAgentWithPlan(
+  userMessage: string,
+  options: AgentOptions
+): Promise<AgentResult> {
+  // Short-circuit for simple tasks
+  if (!isComplexTask(userMessage)) {
+    return runAgent(userMessage, options);
+  }
+
+  console.log("[AGENT] Tarea compleja detectada — generando plan...");
+
+  const execPlan = await generatePlan(userMessage, options.tools);
+
+  if (!execPlan) {
+    console.warn("[AGENT] Falló generación de plan → runAgent normal");
+    return runAgent(userMessage, options);
+  }
+
+  console.log(`[AGENT] Plan: ${execPlan.steps.length} pasos — ${execPlan.steps.join(" | ")}`);
+
+  // Inject plan into system prompt
+  const result = await runAgent(userMessage, {
+    ...options,
+    systemPrompt: options.systemPrompt + execPlan.planBlock,
+  });
+
+  // Detect which steps were completed based on tools actually used
+  const completed = detectCompletedSteps(execPlan.steps, result.usedTools);
+
+  // Build completion summary
+  const stepLines = execPlan.steps.map((step, i) =>
+    `${completed.has(i) ? "✅" : "⬜"} Paso ${i + 1}: ${step}`
+  );
+  const allDone = completed.size === execPlan.steps.length;
+
+  const planSummary =
+    `\n\n---\n📋 *Plan de ejecución:*\n${stepLines.join("\n")}\n` +
+    (allDone
+      ? "✅ Todos los pasos completados."
+      : `⚠️ ${execPlan.steps.length - completed.size} paso(s) pendiente(s).`);
+
+  return {
+    ...result,
+    response: result.response + planSummary,
+  };
 }

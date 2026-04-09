@@ -115,6 +115,36 @@ const stmts = {
   updateTask: db.prepare(`
     UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?
   `),
+
+  // Conversation summaries
+  insertSummary: db.prepare(`
+    INSERT INTO conversation_summaries (user_id, summary, messages_covered)
+    VALUES (?, ?, ?)
+  `),
+
+  getOldMessages: db.prepare(`
+    SELECT * FROM messages
+    WHERE user_id = ?
+    ORDER BY created_at ASC
+    LIMIT ?
+  `),
+
+  deleteMessages: db.prepare(`
+    DELETE FROM messages
+    WHERE user_id = ? AND id IN (
+      SELECT id FROM messages
+      WHERE user_id = ?
+      ORDER BY created_at ASC
+      LIMIT ?
+    )
+  `),
+
+  getLatestSummary: db.prepare(`
+    SELECT summary FROM conversation_summaries
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `),
 };
 
 // ─── Message operations ───────────────────────────────────────────────────────
@@ -131,6 +161,11 @@ function getMessages(userId: string | number, limit = 20): Message[] {
   return stmts.getMessages.all(String(userId), limit).reverse() as Message[];
 }
 
+function getLatestSummary(userId: string | number): string | null {
+  const row = stmts.getLatestSummary.get(String(userId)) as { summary: string } | undefined;
+  return row?.summary ?? null;
+}
+
 function pruneMessages(userId: string | number, keepLast = 200): void {
   stmts.deleteOldMessages.run(String(userId), String(userId), keepLast);
 }
@@ -138,6 +173,57 @@ function pruneMessages(userId: string | number, keepLast = 200): void {
 function countMessages(userId: string | number): number {
   const row = stmts.countMessages.get(String(userId)) as { count: number };
   return row.count;
+}
+
+async function compressOldMessages(userId: string, keepLast = 30): Promise<void> {
+  if (countMessages(userId) <= 100) return;
+
+  try {
+    const oldMessages = stmts.getOldMessages.all(userId, 100) as Message[];
+    if (oldMessages.length === 0) return;
+
+    const conversationText = oldMessages.map((m) => `${m.role}: ${m.content}`).join("\n\n");
+
+    const summaryResponse = await callLLM([
+      { role: "system", content: "Eres un asistente que resume conversaciones." },
+      { role: "user", content: `Resume esta conversación en máximo 150 palabras, enfocándote en decisiones tomadas, configuraciones y resultados.\n\nConversación:\n${conversationText}` },
+    ]);
+
+    const summary = summaryResponse.content?.trim();
+    if (!summary) return;
+
+    stmts.insertSummary.run(userId, summary, oldMessages.length);
+
+    stmts.deleteMessages.run(userId, userId, oldMessages.length);
+  } catch {
+    // Best-effort
+  }
+}
+
+async function reflectOnResponse(
+  userRequest: string,
+  agentResponse: string,
+  usedTools: string[]
+): Promise<{ score: number; missing?: string }> {
+  const prompt = `El usuario pidió: ${userRequest}. El agente respondió: ${agentResponse}. Tools usadas: ${usedTools.join(", ")}. En una escala 1-10, ¿qué tan completa fue la respuesta? Si < 7, describe en una oración qué faltó. Responde JSON: {score: N, missing: '...'}`;
+
+  try {
+    const response = await callLLM([
+      { role: "system", content: "Respondes con JSON válido." },
+      { role: "user", content: prompt },
+    ]);
+
+    const jsonMatch = response.content?.match(/\{[^}]+\}/);
+    if (!jsonMatch) return { score: 5 };
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      score: typeof parsed.score === "number" ? parsed.score : 5,
+      missing: parsed.missing || undefined,
+    };
+  } catch {
+    return { score: 5 };
+  }
 }
 
 // ─── Fact operations ──────────────────────────────────────────────────────────
@@ -217,8 +303,9 @@ function getTasks(userId: string | number): Task[] {
 function getContext(userId: string | number, messageLimit = 20): MemoryContext {
   const recentMessages = getMessages(userId, messageLimit);
   const facts          = getAllFacts(userId);
+  const summary        = getLatestSummary(userId) ?? undefined;
 
-  return { recent_messages: recentMessages, facts };
+  return { recent_messages: recentMessages, facts, summary };
 }
 
 // ─── Format context for LLM system prompt ────────────────────────────────────
@@ -263,6 +350,7 @@ export const memoryService = {
   saveMessage: addMessage, // Alias para compatibilidad
   getMessages,
   getHistory: getMessages, // Alias para compatibilidad
+  getLatestSummary,
   pruneMessages,
   countMessages,
 
@@ -284,6 +372,12 @@ export const memoryService = {
 
   // Facts extraction
   extractAndSaveFacts,
+
+  // Message compression
+  compressOldMessages,
+
+  // Response reflection
+  reflectOnResponse,
 
   // Misc
   auditLog,
