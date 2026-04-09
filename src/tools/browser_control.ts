@@ -79,9 +79,8 @@ async function getOrCreateSession(chatId: string, headed = false): Promise<Brows
     args: headed ? [] : [
       "--no-sandbox",
       "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",   // prevent crashes on low /dev/shm servers
+      "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--single-process",
     ],
   });
   const context = await browser.newContext({
