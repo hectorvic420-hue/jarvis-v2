@@ -73,6 +73,34 @@ const GEMINI_MODEL = "gemini-2.0-flash";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Detecta errores de saldo insuficiente / API key inválida — no tiene sentido reintentar */
+function isFatalProviderError(err: any): boolean {
+  const msg: string = err?.message ?? "";
+  const status: number = err?.status ?? err?.statusCode ?? 0;
+  return (
+    msg.includes("credit balance") ||
+    msg.includes("too low") ||
+    msg.includes("insufficient_quota") ||
+    msg.includes("billing") ||
+    (status === 402) ||
+    (status === 401 && msg.includes("API key"))
+  );
+}
+
+/** Errores transitorios que deberían activar fallback al siguiente provider */
+function isRetryableError(error: any): boolean {
+  const retryableMessages = [
+    'credit balance is too low',
+    'rate limit',
+    'timeout',
+    'econnrefused',
+    'etimedout',
+    'socket hang up',
+  ];
+  const errorStr = JSON.stringify(error).toLowerCase();
+  return retryableMessages.some(msg => errorStr.includes(msg));
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -105,6 +133,7 @@ async function retryWithBackoff<T>(
 
       const shouldRetry =
         attempt < maxRetries &&
+        !isFatalProviderError(err) &&
         (
           err?.message?.includes("429") ||
           err?.message?.includes("rate_limit") ||
@@ -515,13 +544,24 @@ export async function callLLM(
 
   let lastError: Error | undefined;
 
-  for (const provider of providers) {
+  for (let i = 0; i < providers.length; i++) {
+    const provider = providers[i];
+    const isLast = i === providers.length - 1;
+
     try {
       console.log(`[LLM] Intentando ${provider.name}...`);
       return await provider.fn();
     } catch (err) {
       lastError = err as Error;
-      console.warn(`[LLM] ${provider.name} falló:`, lastError.message);
+
+      if (isRetryableError(lastError)) {
+        console.warn(`[LLM] ${provider.name} falló con error retryable, intentando fallback...`);
+      } else if (isFatalProviderError(lastError)) {
+        console.warn(`[LLM] ${provider.name} sin créditos/inválido — pasando al siguiente provider...`);
+      } else {
+        console.warn(`[LLM] ${provider.name} falló:`, lastError.message);
+        if (isLast) throw lastError; // Error fatal en último provider — no hay más opciones
+      }
     }
   }
 

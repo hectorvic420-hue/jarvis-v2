@@ -1,6 +1,7 @@
 import Database, { Database as DatabaseType } from "better-sqlite3";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { runMigrations } from "../db/migrations";
 
 const DB_DIR  = process.env.DB_DIR || "./data/db";
 const DB_PATH = path.join(DB_DIR, "jarvis.db");
@@ -8,6 +9,9 @@ const DB_PATH = path.join(DB_DIR, "jarvis.db");
 if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
+
+// Ejecuta migraciones versionadas (schema_migrations) antes de abrir la conexión principal
+runMigrations(DB_PATH);
 
 const db: DatabaseType = new Database(DB_PATH);
 
