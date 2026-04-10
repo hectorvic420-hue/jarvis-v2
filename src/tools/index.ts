@@ -13,6 +13,7 @@ import { landingBuilderTool }    from "./landing_builder.js";
 import { browserControlTool }    from "./browser_control.js";
 import { selfRepairTool }        from "./self_repair.js";
 import { developerTool }        from "./developer.js";
+import { timezoneTool }         from "./timezone.js";
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ export const tools: Record<string, Tool> = {
   [browserControlTool.name]:    browserControlTool,
   [selfRepairTool.name]:        selfRepairTool,
   [developerTool.name]:         developerTool,
+  [timezoneTool.name]:          timezoneTool,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -86,7 +88,8 @@ export const SYSTEM_PROMPT =
   `- system_control: comandos servidor, métricas CPU/RAM.\n` +
   `- browser_control: navegar web, login, formularios, screenshots.\n` +
   `- self_repair: leer logs, diagnosticar y reparar Jarvis.\n` +
-  `- self_healing_architect: leer/editar código fuente de Jarvis.\n\n` +
+  `- self_healing_architect: leer/editar código fuente de Jarvis.\n` +
+  `- timezone: hora actual en cualquier zona, conversión entre zonas, info de zona del servidor.\n\n` +
 
   `## REGLAS\n` +
   `- Herramienta falla por parámetros: corrige y reintenta UNA vez.\n` +
