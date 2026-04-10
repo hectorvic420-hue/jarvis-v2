@@ -19,26 +19,28 @@ function isWithinAllowedHours(): boolean {
 /** Devuelve la siguiente fecha/hora en un slot autorizado (mínimo 10 min en el futuro). */
 function getNextAllowedSlotDate(): Date {
   const now = new Date();
-  const bogota = new Date(now.toLocaleString("en-US", { timeZone: "America/Bogota" }));
-  const currentHour = bogota.getHours();
-  const currentMin  = bogota.getMinutes();
+  // Hora actual en Bogotá (UTC-5)
+  const bogotaOffsetMs = -5 * 60 * 60 * 1000;
+  const bogotaNow = new Date(now.getTime() + bogotaOffsetMs);
+  const currentHour = bogotaNow.getUTCHours();
+  const currentMin  = bogotaNow.getUTCMinutes();
 
   for (const h of ALLOWED_HOURS) {
-    if (h > currentHour || (h === currentHour && currentMin < 50)) {
-      const slot = new Date(now);
-      // Ajustar a hora de Bogota
-      const offsetDiff = bogota.getTime() - now.getTime();
-      slot.setTime(now.getTime() - offsetDiff + h * 3600000);
-      slot.setMinutes(0, 0, 0);
-      slot.setTime(slot.getTime() + offsetDiff);
-      if (slot.getTime() - now.getTime() >= 10 * 60 * 1000) return slot;
+    const isSameHour = h === currentHour && currentMin < 50;
+    const isFuture   = h > currentHour;
+    if (isFuture || isSameHour) {
+      // Construir fecha en UTC que corresponde a 'h:00 Bogotá'
+      const slotBogota = new Date(bogotaNow);
+      slotBogota.setUTCHours(h, 0, 0, 0);
+      const slotUtc = new Date(slotBogota.getTime() - bogotaOffsetMs);
+      if (slotUtc.getTime() - now.getTime() >= 10 * 60 * 1000) return slotUtc;
     }
   }
-  // Próximo día, primer slot
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(ALLOWED_HOURS[0], 0, 0, 0);
-  return tomorrow;
+  // Todos los slots de hoy pasaron → mañana 6am Bogotá
+  const tomorrowBogota = new Date(bogotaNow);
+  tomorrowBogota.setUTCDate(tomorrowBogota.getUTCDate() + 1);
+  tomorrowBogota.setUTCHours(ALLOWED_HOURS[0], 0, 0, 0);
+  return new Date(tomorrowBogota.getTime() - bogotaOffsetMs);
 }
 
 function formatNextAllowedTime(): string {
