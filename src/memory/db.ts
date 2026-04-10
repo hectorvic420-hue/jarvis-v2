@@ -108,12 +108,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
 
   CREATE TABLE IF NOT EXISTS conversation_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    messages_covered INTEGER,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT    NOT NULL,
+    summary    TEXT    NOT NULL,
+    metadata   TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE INDEX IF NOT EXISTS idx_summaries_user    ON conversation_summaries(user_id);
+  CREATE INDEX IF NOT EXISTS idx_summaries_created ON conversation_summaries(created_at);
 
   CREATE TABLE IF NOT EXISTS episodes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,7 +133,31 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_episodes_created ON episodes(user_id, created_at DESC);
 `);
 
-// ─── Migrations — Part 2: FTS5 virtual table + triggers (optional) ───────────
+// ─── Migrations — Part 2: ALTER TABLE para DBs existentes ────────────────────
+// ALTER TABLE falla si la columna ya existe; se ignora silenciosamente.
+for (const sql of [
+  `ALTER TABLE conversation_summaries ADD COLUMN metadata   TEXT`,
+  `ALTER TABLE conversation_summaries ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
+]) {
+  try { db.exec(sql); } catch { /* columna ya existe — ok */ }
+}
+
+try {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_summaries_user    ON conversation_summaries(user_id);
+    CREATE INDEX IF NOT EXISTS idx_summaries_created ON conversation_summaries(created_at);
+
+    CREATE TRIGGER IF NOT EXISTS trg_summaries_updated
+    AFTER UPDATE ON conversation_summaries
+    BEGIN
+      UPDATE conversation_summaries SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+    END;
+  `);
+} catch (err) {
+  console.warn("[DB] Migration 001 parcial:", (err as Error).message);
+}
+
+// ─── Migrations — Part 3: FTS5 virtual table + triggers (optional) ───────────
 // Isolated in its own exec() + try/catch. If the server's SQLite was compiled
 // without FTS5, this fails silently and episodic search falls back to recents.
 try {
