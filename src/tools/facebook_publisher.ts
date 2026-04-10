@@ -16,24 +16,34 @@ function isWithinAllowedHours(): boolean {
   return ALLOWED_HOURS.includes(hour);
 }
 
-function getNextAllowedHour(): number {
+/** Devuelve la siguiente fecha/hora en un slot autorizado (mínimo 10 min en el futuro). */
+function getNextAllowedSlotDate(): Date {
   const now = new Date();
-  const currentHour = now.getHours();
+  const bogota = new Date(now.toLocaleString("en-US", { timeZone: "America/Bogota" }));
+  const currentHour = bogota.getHours();
+  const currentMin  = bogota.getMinutes();
+
   for (const h of ALLOWED_HOURS) {
-    if (h > currentHour) return h;
+    if (h > currentHour || (h === currentHour && currentMin < 50)) {
+      const slot = new Date(now);
+      // Ajustar a hora de Bogota
+      const offsetDiff = bogota.getTime() - now.getTime();
+      slot.setTime(now.getTime() - offsetDiff + h * 3600000);
+      slot.setMinutes(0, 0, 0);
+      slot.setTime(slot.getTime() + offsetDiff);
+      if (slot.getTime() - now.getTime() >= 10 * 60 * 1000) return slot;
+    }
   }
-  return ALLOWED_HOURS[0];
+  // Próximo día, primer slot
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(ALLOWED_HOURS[0], 0, 0, 0);
+  return tomorrow;
 }
 
 function formatNextAllowedTime(): string {
-  const nextHour = getNextAllowedHour();
-  const now = new Date();
-  let next = new Date(now);
-  next.setHours(nextHour, 0, 0, 0);
-  if (next <= now) {
-    next.setDate(next.getDate() + 1);
-  }
-  return next.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", timeZone: "America/Bogota" });
+  const next = getNextAllowedSlotDate();
+  return next.toLocaleString("es-CO", { timeZone: "America/Bogota", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" });
 }
 
 // ─── Rate limiting & deduplication ───────────────────────────────────────────
@@ -213,40 +223,54 @@ async function quickPost(pageIdOrName: string | undefined, message: string, sche
     return "❌ Error: No se proporcionó mensaje para publicar.";
   }
 
-  if (!isWithinAllowedHours()) {
-    return `🚫 *Publicación bloqueada*\n\nLos horarios permitidos son: 6am, 9am, 12pm, 3pm, 6pm (hora Colombia).\n\nPróximo horario disponible: ${formatNextAllowedTime()}\n\n*Para publicar fuera de horario necesitas autorización expresa.*`;
-  }
-
   if (isDuplicateContent(message)) {
-    return "⚠️ Contenido duplicado: Este mensaje es idéntico a la última publicación. No se publica para evitar spam.";
+    return "⚠️ Contenido duplicado: Este mensaje es idéntico a la última publicación.";
   }
 
   const rateLimitError = checkRateLimit();
   if (rateLimitError) return rateLimitError;
 
+  // Determinar cuándo publicar:
+  // 1. Si el usuario pasó un schedule explícito → usar ese
+  // 2. Si estamos fuera de horario → auto-programar al próximo slot
+  // 3. Si estamos en horario → publicar ahora
+  let scheduledTs: number | undefined;
+  let scheduledLabel: string | undefined;
+
   if (schedule) {
-    const scheduleResult = validateSchedule(schedule);
-    if (!scheduleResult.valid) {
-      return `❌ Error de programación: ${scheduleResult.error}`;
-    }
-    if (scheduleResult.delayMs) {
-      return `⏳ Publicación programada para ${schedule}. Se ejecutará en ${Math.round(scheduleResult.delayMs / 60000)} minutos.\nNOTA: El sistema debe permanecer activo para ejecutar la publicación programada.`;
-    }
+    const t = new Date(schedule);
+    if (isNaN(t.getTime())) return `❌ Fecha inválida: ${schedule}`;
+    scheduledTs    = Math.floor(t.getTime() / 1000);
+    scheduledLabel = t.toLocaleString("es-CO", { timeZone: "America/Bogota" });
+  } else if (!isWithinAllowedHours()) {
+    const next     = getNextAllowedSlotDate();
+    scheduledTs    = Math.floor(next.getTime() / 1000);
+    scheduledLabel = formatNextAllowedTime();
   }
 
   const { id, token: pToken } = await findPageCredentials(pageIdOrName);
   const url = `${GRAPH_BASE}/${id}/feed?access_token=${pToken}`;
+  const body: Record<string, unknown> = { message };
+  if (scheduledTs) {
+    body.published             = false;
+    body.scheduled_publish_time = scheduledTs;
+  }
+
   const res = await fetchWithTimeout(url, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, scheduled_publish_time: schedule ? Math.floor(new Date(schedule).getTime() / 1000) : undefined }),
+    body:    JSON.stringify(body),
   });
   const data = await res.json() as ApiResponse;
   if (!res.ok) throw new Error(data.error?.message || "Error publicando");
-  
+
   recordPost(message);
   lastPublishedPostId = data.id;
-  return `✅ Publicado en ${id}\nID: ${data.id}`;
+
+  if (scheduledTs) {
+    return `⏳ Publicación programada en Facebook para *${scheduledLabel}*\nPost ID: ${data.id}\n_(Facebook publicará automáticamente aunque Jarvis esté apagado)_`;
+  }
+  return `✅ Publicado en ${id}\nPost ID: ${data.id}`;
 }
 
 async function postImage(pageIdOrName: string | undefined, imageUrl: string, message: string, schedule?: string): Promise<string> {
@@ -254,33 +278,46 @@ async function postImage(pageIdOrName: string | undefined, imageUrl: string, mes
     return "❌ Error: No se proporcionó URL de imagen.";
   }
 
-  if (!isWithinAllowedHours()) {
-    return `🚫 *Publicación bloqueada*\n\nLos horarios permitidos son: 6am, 9am, 12pm, 3pm, 6pm (hora Colombia).\n\nPróximo horario disponible: ${formatNextAllowedTime()}\n\n*Para publicar fuera de horario necesitas autorización expresa.*`;
-  }
-
   const rateLimitError = checkRateLimit();
   if (rateLimitError) return rateLimitError;
 
+  let scheduledTs: number | undefined;
+  let scheduledLabel: string | undefined;
+
   if (schedule) {
-    const scheduleResult = validateSchedule(schedule);
-    if (!scheduleResult.valid) {
-      return `❌ Error de programación: ${scheduleResult.error}`;
-    }
+    const t = new Date(schedule);
+    if (isNaN(t.getTime())) return `❌ Fecha inválida: ${schedule}`;
+    scheduledTs    = Math.floor(t.getTime() / 1000);
+    scheduledLabel = t.toLocaleString("es-CO", { timeZone: "America/Bogota" });
+  } else if (!isWithinAllowedHours()) {
+    const next     = getNextAllowedSlotDate();
+    scheduledTs    = Math.floor(next.getTime() / 1000);
+    scheduledLabel = formatNextAllowedTime();
   }
 
   const { id, token: pToken } = await findPageCredentials(pageIdOrName);
   const url = `${GRAPH_BASE}/${id}/photos?access_token=${pToken}`;
+  const body: Record<string, unknown> = { url: imageUrl, message };
+  if (scheduledTs) {
+    body.published              = false;
+    body.scheduled_publish_time = scheduledTs;
+  }
+
   const res = await fetchWithTimeout(url, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: imageUrl, message }),
+    body:    JSON.stringify(body),
   });
   const data = await res.json() as ApiResponse;
   if (!res.ok) throw new Error(data.error?.message || "Error publicando imagen");
-  
+
   recordPost(`[IMAGEN] ${message}`);
   lastPublishedPostId = data.post_id ?? data.id;
-  return `✅ Imagen publicada en ${id}\nPost ID: ${data.post_id ?? data.id}\nURL imagen: ${imageUrl}`;
+
+  if (scheduledTs) {
+    return `⏳ Imagen programada en Facebook para *${scheduledLabel}*\nPost ID: ${data.post_id ?? data.id}`;
+  }
+  return `✅ Imagen publicada en ${id}\nPost ID: ${data.post_id ?? data.id}`;
 }
 
 async function postVideo(pageIdOrName: string | undefined, videoUrl: string, description: string, title: string, schedule?: string): Promise<string> {
@@ -288,33 +325,46 @@ async function postVideo(pageIdOrName: string | undefined, videoUrl: string, des
     return "❌ Error: No se proporcionó URL de video.";
   }
 
-  if (!isWithinAllowedHours()) {
-    return `🚫 *Publicación bloqueada*\n\nLos horarios permitidos son: 6am, 9am, 12pm, 3pm, 6pm (hora Colombia).\n\nPróximo horario disponible: ${formatNextAllowedTime()}\n\n*Para publicar fuera de horario necesitas autorización expresa.*`;
-  }
-
   const rateLimitError = checkRateLimit();
   if (rateLimitError) return rateLimitError;
 
+  let scheduledTs: number | undefined;
+  let scheduledLabel: string | undefined;
+
   if (schedule) {
-    const scheduleResult = validateSchedule(schedule);
-    if (!scheduleResult.valid) {
-      return `❌ Error de programación: ${scheduleResult.error}`;
-    }
+    const t = new Date(schedule);
+    if (isNaN(t.getTime())) return `❌ Fecha inválida: ${schedule}`;
+    scheduledTs    = Math.floor(t.getTime() / 1000);
+    scheduledLabel = t.toLocaleString("es-CO", { timeZone: "America/Bogota" });
+  } else if (!isWithinAllowedHours()) {
+    const next     = getNextAllowedSlotDate();
+    scheduledTs    = Math.floor(next.getTime() / 1000);
+    scheduledLabel = formatNextAllowedTime();
   }
 
   const { id, token: pToken } = await findPageCredentials(pageIdOrName);
   const url = `${GRAPH_BASE}/${id}/videos?access_token=${pToken}`;
+  const body: Record<string, unknown> = { file_url: videoUrl, description, title };
+  if (scheduledTs) {
+    body.published              = false;
+    body.scheduled_publish_time = scheduledTs;
+  }
+
   const res = await fetchWithTimeout(url, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_url: videoUrl, description, title }),
+    body:    JSON.stringify(body),
   });
   const data = await res.json() as ApiResponse;
   if (!res.ok) throw new Error(data.error?.message || "Error publicando video");
-  
+
   recordPost(`[VIDEO] ${title}: ${description}`);
   lastPublishedPostId = data.id;
-  return `✅ Video publicado en ${id}\nVideo ID: ${data.id}\nURL video: ${videoUrl}`;
+
+  if (scheduledTs) {
+    return `⏳ Video programado en Facebook para *${scheduledLabel}*\nVideo ID: ${data.id}`;
+  }
+  return `✅ Video publicado en ${id}\nVideo ID: ${data.id}`;
 }
 
 async function deletePost(postId: string): Promise<string> {

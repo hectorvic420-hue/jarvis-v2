@@ -73,7 +73,7 @@ export const SYSTEM_PROMPT =
   `✅ Si es ambiguo: infiere la intención más lógica, ejecuta y explica.\n\n` +
 
   `## HERRAMIENTAS (úsalas por contexto)\n` +
-  `- facebook_publisher: publicar/programar/métricas Facebook. Horarios autorizados: 6am 9am 12pm 3pm 6pm.\n` +
+  `- facebook_publisher: publicar/programar/métricas Facebook. Si no es horario autorizado (6am 9am 12pm 3pm 6pm), programa automáticamente al siguiente slot — nunca bloquea.\n` +
   `- meta_ads: campañas Meta Ads (crear, pausar, stats, presupuesto, ROAS).\n` +
   `- n8n_manager: workflows n8n (listar, importar, activar, ejecutar).\n` +
   `- google_workspace: Gmail, Calendar, Drive, Docs, Sheets.\n` +
