@@ -79,13 +79,26 @@ const MAX_LOOP_BREAKS         = 3;  // avisos antes de salir definitivamente
 /**
  * Errores que NO tienen sentido reintentar: permisos, auth, token inválido.
  * El agente debe informar al usuario inmediatamente.
+ *
+ * IMPORTANTE: respuestas de tipo log/diagnóstico (self_healing_architect read_logs,
+ * self_repair read_logs) se excluyen explícitamente — contienen errores históricos
+ * con códigos como "401" que no son errores fatales del request actual.
  */
 function isFatalError(response: string): boolean {
+  // Excluir respuestas de tipo log/diagnóstico — su contenido incluye errores
+  // históricos que no aplican al request actual
+  if (
+    response.startsWith("📄") ||
+    response.includes("[LOGS DE ERROR]") ||
+    response.includes("[PM2]") ||
+    response.includes("jarvis-v2-error.log")
+  ) return false;
+
   const FATAL_PATTERNS = [
     "(#200)", "(#10)", "(#100)",
     "OAuthException",
     "access_token", "Invalid token", "token expired",
-    "401", "403", "Unauthorized", "Forbidden",
+    "Unauthorized", "Forbidden",
     "no configurado",
     "Falta configuración", "Falta credenciales", "Falta API_KEY", "Falta TOKEN",
   ];
