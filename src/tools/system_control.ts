@@ -2,74 +2,34 @@ import { exec } from "child_process";
 import os from "os";
 import { promisify } from "util";
 import { Tool } from "../shared/types.js";
+import { validateCommand } from "../security/commandValidator.js";
 
 const execAsync = promisify(exec);
 const MAX_OUTPUT_CHARS = 3000;
 const CMD_TIMEOUT_MS = 30000;
 
-const DANGEROUS_PATTERNS = [
-  /rm\s+-rf/i,
-  /curl\s+\|\s*bash/i,
-  /wget\s+\|\s*sh/i,
-  /chmod\s+777/i,
-  /\>\s*\/etc/i,
-  /dd\s+if=/i,
-  /mkfs/i,
-  /:\(\)\s*\{.*:\|:&.*\}/i,
-  /base64\s+-d\s*\|\s*bash/i,
-];
+export async function runCommand(command: string): Promise<string> {
+  const validation = validateCommand(command);
 
-function validateCommand(cmd: string): boolean {
-  const lower = cmd.toLowerCase();
-  
-  for (const pattern of DANGEROUS_PATTERNS) {
-    if (pattern.test(lower)) {
-      return false;
+  if (validation.isErr()) {
+    const err = validation.error;
+    switch (err.code) {
+      case 'DANGEROUS_CHARS':
+      case 'SENSITIVE_FILE':
+      case 'CURL_OUTPUT_BLOCKED':
+        return `❌ Comando bloqueado por seguridad: ${err.message}`;
+      case 'COMMAND_NOT_ALLOWED':
+        return `⚠️ ${err.message}\nComandos permitidos: ls, cat, pwd, echo, df, free, uptime, whoami, pm2, git, npm, curl.`;
+      case 'INVALID_FORMAT':
+      case 'TOO_MANY_ARGS':
+        return `⚠️ ${err.message}`;
+      default:
+        return `❌ Comando inválido: ${err.message}`;
     }
   }
 
-  if (/\|\s*(bash|sh|zsh|exec)/i.test(lower)) {
-    return false;
-  }
-
-  return true;
-}
-
-const ALLOWED_COMMANDS: RegExp[] = [
-  /^ls(\s+[-\w./]+)*$/,
-  /^cat\s+[\w./-]+$/,
-  /^pwd$/,
-  /^echo\s+["'][^"']*["']$/,
-  /^echo\s+[^\s;|`$]+$/,
-  /^df\s*$/,
-  /^free\s*$/,
-  /^uptime$/,
-  /^whoami$/,
-  /^uname(\s+-[a-z]+)?$/,
-  /^ps(\s+-[efww]+)*$/,
-  /^top\s+-bn1$/,
-  /^pm2\s+(list|status|logs|restart|stop|start|reload|monit)(\s+[\w-]+)*$/,
-  /^node\s+--version$/,
-  /^npm\s+(list|outdated|audit|run)(\s+[\w-]+)*$/,
-  /^git\s+(status|log|diff|branch|remote)(\s+[-a-z]+)*$/,
-  /^curl\s+--max-time\s+\d+\s+https?:\/\/[^\s;|`$]+$/,
-];
-
-function isCommandAllowed(cmd: string): boolean {
-  return ALLOWED_COMMANDS.some((pattern) => pattern.test(cmd.trim()));
-}
-
-export async function runCommand(command: string): Promise<string> {
-  if (!validateCommand(command)) {
-    return "❌ Comando bloqueado por seguridad. Solo se permiten comandos de lectura y diagnóstico.";
-  }
-
-  if (!isCommandAllowed(command)) {
-    return `⚠️ Comando no permitido: "${command}"\nComandos permitidos: ls, cat, pwd, echo, df, free, uptime, whoami, pm2, git, npm.`;
-  }
-
   try {
-    const { stdout, stderr } = await execAsync(command, {
+    const { stdout, stderr } = await execAsync(validation.value, {
       timeout: CMD_TIMEOUT_MS,
       cwd: process.env.JARVIS_WORK_DIR || process.cwd(),
     });

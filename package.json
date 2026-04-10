@@ -8,7 +8,12 @@
     "start": "node dist/index.js",
     "deploy": "npm run build && ./scripts/deploy.sh",
     "restart": "./scripts/restart.sh",
-    "setup-server": "./scripts/setup-server.sh"
+    "setup-server": "./scripts/setup-server.sh",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:security": "vitest run tests/security/",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest --watch"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.81.0",
@@ -32,7 +37,9 @@
     "@types/node": "^20.12.7",
     "@types/pdf-parse": "^1.1.5",
     "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^4.1.4",
     "tsx": "^4.9.3",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.4"
   }
 }

@@ -7,6 +7,8 @@ import db                   from "../memory/db.js";
 import { detectInfraIssue, runInfraFix } from "./infra_repair.js";
 import { commitRepair }                   from "../shared/git_utils.js";
 import { Tool }             from "../shared/types.js";
+import { PathValidator, PathTraversalError } from "../security/pathValidator.js";
+import { RateLimiter }      from "../security/rateLimiter.js";
 
 const execAsync = promisify(exec);
 
@@ -15,6 +17,15 @@ const PROJECT_ROOT  = process.env.JARVIS_ROOT  ?? "/opt/jarvis/jarvis-v2";
 const BACKUPS_DIR   = process.env.BACKUPS_DIR  ?? "/opt/jarvis/backups";
 const PM2_LOG       = path.join(process.env.HOME ?? "", ".pm2/logs/jarvis-v2-error.log");
 const MAX_REPAIRS_PER_HOUR = 3;
+
+const pathValidator = new PathValidator({
+  projectRoot: PROJECT_ROOT,
+  allowedExtensions: ['.ts', '.js', '.json'],
+  allowNonExistent: true,   // Permitimos crear archivos nuevos
+  followSymlinks: false,
+});
+
+const repairLimiter = new RateLimiter(); // Usa store en memoria
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
 function getRepairsInLastHour(): number {
@@ -59,21 +70,35 @@ function readLogs(lines = 100): string {
   }
 }
 
-function extractFilesFromStack(logs: string): string[] {
+async function extractFilesFromStack(logs: string): Promise<string[]> {
   const srcRegex  = /\/opt\/jarvis\/jarvis-v2\/src\/([\w/.-]+\.ts)/g;
   const distRegex = /\/opt\/jarvis\/jarvis-v2\/dist\/([\w/.-]+\.js)/g;
 
-  const files = new Set<string>();
+  const rawFiles = new Set<string>();
 
   for (const match of logs.matchAll(srcRegex)) {
-    files.add(`src/${match[1]}`);
+    rawFiles.add(`src/${match[1]}`);
   }
   for (const match of logs.matchAll(distRegex)) {
     const src = match[1].replace(/\.js$/, ".ts");
-    files.add(`src/${src}`);
+    rawFiles.add(`src/${src}`);
   }
 
-  return [...files].slice(0, 3);
+  // Validar cada archivo extraído contra PathValidator
+  const validFiles: string[] = [];
+  for (const file of rawFiles) {
+    const validation = pathValidator.validate(file);
+    if (validation.isOk()) {
+      validFiles.push(file);
+    } else {
+      console.warn(`[SECURITY] Archivo inválido detectado en logs: ${file} — ${validation.error.message}`);
+      if (validation.error instanceof PathTraversalError) {
+        await notifyTelegram("admin", `🚨 Intento de path traversal detectado en logs: ${file}`);
+      }
+    }
+  }
+
+  return validFiles.slice(0, 3);
 }
 
 const CRITICAL_FILES = ["src/agent.ts", "src/index.ts", "src/llm.ts"];
@@ -96,7 +121,14 @@ function buildCodeContext(affectedFiles: string[]): string {
 }
 
 function backupFile(absolutePath: string): string {
+  // Validar que el archivo a respaldar es válido dentro del proyecto
+  const fileValidation = pathValidator.validate(path.relative(PROJECT_ROOT, absolutePath));
+  if (fileValidation.isErr()) {
+    throw new Error(`Archivo inválido para backup: ${fileValidation.error.message}`);
+  }
+
   if (!fs.existsSync(BACKUPS_DIR)) fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+
   const filename   = path.basename(absolutePath);
   const backupPath = path.join(BACKUPS_DIR, `${filename}-${Date.now()}.bak`);
   fs.copyFileSync(absolutePath, backupPath);
@@ -105,6 +137,16 @@ function backupFile(absolutePath: string): string {
 
 // ─── Core repair logic ────────────────────────────────────────────────────────
 async function runRepair(chatId: string): Promise<string> {
+  // Rate limiting — máximo 3 reparaciones por hora por usuario
+  const rateCheck = await repairLimiter.checkLimit(chatId, 'self_repair');
+  if (rateCheck.isErr()) {
+    const retryAfterSeconds = (rateCheck as any).error.retryAfterSeconds as number;
+    await notifyTelegram(chatId,
+      `⏳ Rate limit: Máximo 3 reparaciones por hora. Reintenta en ${retryAfterSeconds}s.`
+    );
+    return `⏳ Límite de reparaciones alcanzado. Espera ${Math.ceil(retryAfterSeconds / 60)} minutos.`;
+  }
+
   const recentCount = getRepairsInLastHour();
   if (recentCount >= MAX_REPAIRS_PER_HOUR) {
     return `⚠️ Límite de auto-reparaciones alcanzado (${MAX_REPAIRS_PER_HOUR}/hora). Espera antes de intentar de nuevo.`;
@@ -142,15 +184,20 @@ async function runRepair(chatId: string): Promise<string> {
   }
 
   // ── Identify affected files ──────────────────────────────────────────────────
-  let affectedFiles = extractFilesFromStack(logs);
+  let affectedFiles = await extractFilesFromStack(logs);
   if (affectedFiles.length === 0) affectedFiles = ["src/agent.ts"];
 
   const targetRelPath = affectedFiles[0];
-  const targetAbsPath = path.join(PROJECT_ROOT, targetRelPath);
 
-  if (!targetAbsPath.startsWith(path.join(PROJECT_ROOT, "src"))) {
-    return `❌ Por seguridad, solo puedo editar archivos en src/. Detecté: ${targetRelPath}`;
+  // Validación con PathValidator (reemplaza el check de startsWith)
+  const pathValidation = pathValidator.validate(targetRelPath);
+  if (pathValidation.isErr()) {
+    console.error(`[SECURITY] Validación de path falló: ${pathValidation.error.message}`);
+    return `❌ Error de seguridad: ${pathValidation.error.message}`;
   }
+
+  const targetAbsPath = pathValidation.value;
+
   if (!fs.existsSync(targetAbsPath)) {
     return `❌ Archivo no encontrado: ${targetAbsPath}`;
   }
@@ -298,7 +345,7 @@ export const selfRepairTool: Tool = {
         if (logs.startsWith("⚠️")) return logs;
 
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-        const affectedFiles = extractFilesFromStack(logs);
+        const affectedFiles = await extractFilesFromStack(logs);
 
         const codeContext = buildCodeContext(affectedFiles);
 
