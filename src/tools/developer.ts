@@ -34,6 +34,12 @@ async function readSourceCode(filePath: string): Promise<string> {
         if (!absolutePath.startsWith(BASE_DIR)) return "❌ Acceso denegado fuera del proyecto.";
         if (!fs.existsSync(absolutePath)) return `❌ El archivo ${filePath} no existe.`;
         
+        const stat = fs.statSync(absolutePath);
+        if (stat.isDirectory()) {
+          const files = fs.readdirSync(absolutePath).join("\n");
+          return `📁 [DIRECTORIO ${filePath}]:\n${files}`;
+        }
+
         const content = fs.readFileSync(absolutePath, "utf-8");
         return `📄 [CÓDIGO DE ${filePath}]:\n\`\`\`typescript\n${content}\n\`\`\``;
     } catch (err: any) {
