@@ -1,5 +1,5 @@
 import db from "./db.js";
-import { callLLM, callLLMCheap, LLMMessage } from "../llm.js";
+import { callLLMCheap, LLMMessage } from "../llm.js";
 
 // ─── Fix 4: Timezone from environment variable ────────────────────────────────
 const TIMEZONE = process.env.TIMEZONE ?? "America/Bogota";
@@ -52,6 +52,27 @@ export interface MemoryContext {
   facts:              Fact[];
   summary?:           string;
   relevant_episodes?: Episode[];
+}
+
+// ─── Ensure conversation_summaries exists before preparing statements ─────────
+// Defensive guard: si el servidor tiene una DB antigua sin esta tabla,
+// la crea aquí en vez de fallar con "no such table" al cargar el módulo.
+const _summariesExists = db.prepare(
+  "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries'"
+).get();
+if (!_summariesExists) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_summaries_user ON conversation_summaries(user_id);
+    CREATE INDEX IF NOT EXISTS idx_summaries_created ON conversation_summaries(created_at);
+  `);
 }
 
 // ─── Prepared statements ──────────────────────────────────────────────────────
@@ -129,8 +150,8 @@ const stmts = {
 
   // Conversation summaries
   insertSummary: db.prepare(`
-    INSERT INTO conversation_summaries (user_id, summary, messages_covered)
-    VALUES (?, ?, ?)
+    INSERT INTO conversation_summaries (user_id, summary)
+    VALUES (?, ?)
   `),
 
   getOldMessages: db.prepare(`
@@ -230,7 +251,7 @@ async function compressOldMessages(userId: string): Promise<void> {
     const summary = summaryResponse.content?.trim();
     if (!summary) return;
 
-    stmts.insertSummary.run(userId, summary, oldMessages.length);
+    stmts.insertSummary.run(userId, summary);
 
     stmts.deleteMessages.run(userId, userId, oldMessages.length);
   } catch {
