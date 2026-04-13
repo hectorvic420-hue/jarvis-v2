@@ -459,16 +459,13 @@ function upsertCapital(asset: string, amount: number, _source?: string): void {
 export const memoryService = {
   // Messages
   addMessage,
-  saveMessage: addMessage, // Alias para compatibilidad
   getMessages,
-  getHistory: getMessages, // Alias para compatibilidad
   getLatestSummary,
   pruneMessages,
   countMessages,
 
   // Facts
   upsertFact,
-  setFact: upsertFact,     // Alias para compatibilidad
   getFact,
   getAllFacts,
   deleteFact,

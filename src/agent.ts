@@ -242,7 +242,7 @@ async function compressHistorySemantically(messages: LLMMessage[], userId: strin
     };
 
     const recentMessages = messages.slice(-30);
-    memoryService.saveMessage(userId, "system", summary, "summary");
+    memoryService.addMessage(userId, "system", summary, "summary");
 
     return [systemMsg, summaryMsg, ...recentMessages];
   } catch {

@@ -1,11 +1,13 @@
 // src/bot/landing_wizard.ts
 import { landingBuilderTool } from "../tools/landing_builder.js";
 import { LANDING_STYLES } from "../tools/landing_prompts.js";
+import { getWizard, saveWizard, removeWizard } from "../repositories/wizardRepository.js";
 
 export interface LandingWizardState {
-  step:    number;
-  channel: "whatsapp" | "telegram";
-  data:    Partial<LandingParams>;
+  userId:    string;    // incluido para persistencia SQLite
+  step:      number;
+  channel:   "whatsapp" | "telegram";
+  data:      Partial<LandingParams>;
   startedAt: number;
 }
 
@@ -36,8 +38,6 @@ const WIZARD_CANCEL_TRIGGERS = [
   "otra cosa", "olvídalo", "no quiero",
 ];
 
-export const WIZARD_MAP = new Map<string, LandingWizardState>();
-
 export const WIZARD_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
 
 export function isWizardTrigger(text: string): boolean {
@@ -57,30 +57,23 @@ export function isWizardInterrupt(text: string): boolean {
 }
 
 export function getWizardState(userId: string): LandingWizardState | undefined {
-  const state = WIZARD_MAP.get(userId);
-  if (!state) return undefined;
-
-  if (Date.now() - state.startedAt > WIZARD_TIMEOUT_MS) {
-    WIZARD_MAP.delete(userId);
-    return undefined;
-  }
-
-  return state;
+  return getWizard(userId);
 }
 
 export function startWizard(channel: "whatsapp" | "telegram", userId: string): LandingWizardState {
   const state: LandingWizardState = {
+    userId,
     step: 0,
     channel,
     data: {},
     startedAt: Date.now(),
   };
-  WIZARD_MAP.set(userId, state);
+  saveWizard(state);
   return state;
 }
 
 export function clearWizard(userId: string): void {
-  WIZARD_MAP.delete(userId);
+  removeWizard(userId);
 }
 
 function getStyleEmoji(style: string): string {
@@ -221,12 +214,18 @@ export function parseStepAnswer(state: LandingWizardState, answer: string): { up
   }
 
   state.startedAt = Date.now();
+  saveWizard(state);   // persistir cambio en SQLite
   return { updated: true };
+}
+
+export function advanceStep(state: LandingWizardState): void {
+  state.step++;
+  state.startedAt = Date.now();
+  saveWizard(state);   // persistir cambio en SQLite
 }
 
 export async function generateWizardLanding(state: LandingWizardState): Promise<string> {
   const d = state.data;
-  const userId = getWizardUserId(state);
 
   const prompt = d.prompt ||
     `${d.title || "Producto"}\n\n${d.description || ""}\n\nPara: ${d.audience || "emprendedores"}`;
@@ -243,25 +242,12 @@ export async function generateWizardLanding(state: LandingWizardState): Promise<
       countdown_hours: 48,
     }, `wizard-${state.channel}`);
 
-    if (userId) clearWizard(userId);
+    clearWizard(state.userId);
     return result;
   } catch (err: any) {
-    if (userId) clearWizard(userId);
+    clearWizard(state.userId);
     return `❌ Error generando landing: ${err.message}`;
   }
-}
-
-export function getWizardUserId(state: LandingWizardState): string {
-  let found = "";
-  WIZARD_MAP.forEach((val, key) => {
-    if (val === state) found = key;
-  });
-  return found;
-}
-
-export function advanceStep(state: LandingWizardState): void {
-  state.step++;
-  state.startedAt = Date.now();
 }
 
 export function getStyleName(style: string): string {

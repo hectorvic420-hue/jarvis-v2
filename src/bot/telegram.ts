@@ -5,7 +5,7 @@ import { memoryService } from "../memory/service.js";
 import {
   isWizardTrigger, isWizardCancel, getWizardState, startWizard,
   getStepMessage, parseStepAnswer, advanceStep, generateWizardLanding,
-  clearWizard, buildWizardStatus, WIZARD_MAP,
+  clearWizard, buildWizardStatus,
 } from "./landing_wizard.js";
 import { processMediaBuffer } from "./media_processor.js";
 import { screenshotStore } from "../tools/browser_control.js";
@@ -285,19 +285,6 @@ export function createTelegramBot(): Bot<BotCtx> {
     const text   = ctx.message.text;
     const userId = ctx.from.id;
     const chatId = String(userId);
-
-    // ─── Wizard: Sync from session ──────────────────────────────────────────
-    if (ctx.session.wizard) {
-      const existing = WIZARD_MAP.get(chatId);
-      if (!existing || existing.startedAt !== ctx.session.wizard.startedAt) {
-        WIZARD_MAP.set(chatId, {
-          step: ctx.session.wizard.step,
-          channel: "telegram",
-          data: ctx.session.wizard.data,
-          startedAt: ctx.session.wizard.startedAt,
-        });
-      }
-    }
 
     // ─── Wizard Flow ────────────────────────────────────────────────────────
     const wizard = getWizardState(chatId);

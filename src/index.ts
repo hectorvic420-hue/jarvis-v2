@@ -1,5 +1,5 @@
-import "dotenv/config";
-import "./memory/db"; // inicializa DB antes que todo
+import "./config/env"; // valida variables de entorno con Zod antes que todo
+import "./memory/db";  // inicializa DB y ejecuta migraciones
 // @ts-ignore - Express v5 types gap
 import express from "express";
 import { createTelegramBot } from "./bot/telegram.js";
