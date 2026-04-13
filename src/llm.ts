@@ -515,8 +515,8 @@ export async function callLLM(
 ): Promise<LLMResponse> {
   const providers = [];
 
-  // 1. Claude: prioridad principal (mejor calidad)
-  if (process.env.ANTHROPIC_API_KEY) {
+  // 1. Claude: prioridad principal (mejor calidad) — omitir si DISABLE_CLAUDE=true
+  if (process.env.ANTHROPIC_API_KEY && process.env.DISABLE_CLAUDE !== "true") {
     providers.push({ name: "Claude", fn: () => callClaude(messages, tools) });
   }
 
@@ -591,8 +591,8 @@ export async function callLLMCheap(
   if (process.env.GOOGLE_API_KEY) {
     providers.push({ name: "Gemini", fn: () => callGemini(messages, tools) });
   }
-  // Último recurso: Claude (evitar si es posible)
-  if (process.env.ANTHROPIC_API_KEY) {
+  // Último recurso: Claude (evitar si es posible) — omitir si DISABLE_CLAUDE=true
+  if (process.env.ANTHROPIC_API_KEY && process.env.DISABLE_CLAUDE !== "true") {
     providers.push({ name: "Claude", fn: () => callClaude(messages, tools) });
   }
 
